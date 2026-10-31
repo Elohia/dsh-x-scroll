@@ -78,3 +78,62 @@ riskCooldownHours:24
 - **T1（server）**：`node server/mcp_server.mjs` 手工喂 initialize + tools/list + tools/call(x_whoami) + tools/call(x_search) ，贴返回；坏代理下 x_status 必须返回 `ok:false` 而不是崩。
 - **T2（ui/host）**：`node --check index.js`、`node --check client.js`；`node --check cordis.patch.yml`（yaml 用 node -e 读一遍）；`package.json` 能被 `node -e "JSON.parse(...)"` 解析；grep 全仓无 `xhs` 残留（AGENTS.md 出处说明除外）。
 - **T3（charter）**：`prompts/duty.md` 含五节与只读铁律；`README.md` 的安装命令可照抄执行；`selfcheck.mjs` 能跑出结果并退出码 0。
+
+
+---
+
+# CONTRACT v0.2 · 写操作（点赞 / 关注 / 回复 / 发帖）
+
+> 2026-10-31 用户指令：「点赞、关注、回复、发帖，也放进去，但是要加开关」。
+> 原则：**默认全关；开关只解决"能不能"，额度解决"多少"，台账解决"可追"。**
+
+## 1 配置字段（新增，config.json）
+
+```
+allowWrite:false,        // 总闸：false 时下面四个开关一律无效（fail-closed）
+allowLike:false,         // 点赞
+allowFollow:false,       // 关注
+allowReply:false,        // 回复
+allowPost:false,         // 发帖（含引用转推）
+replyRequireConfirm:true,// 回复前要 confirm:true
+postRequireConfirm:true, // 发帖前要 confirm:true
+maxLikesPerDay:20,
+maxFollowsPerDay:10,
+maxRepliesPerDay:5,
+maxPostsPerDay:3,
+replyMinChars:15,        // 回复正文下限（治"说得好"）
+replyAllowLinks:false,   // 回复里是否允许放链接（冷启动期应关）
+```
+
+## 2 新增 MCP 工具（server/mcp_server.mjs）
+
+| 工具 | 参数 | 行为 |
+|:--|:--|:--|
+| `x_like` | `{id, confirm?}` | 已赞过 → 拒绝；超额度 → 拒绝；写台账 |
+| `x_follow` | `{handle, confirm?}` | 已关注 → 拒绝；超额度 → 拒绝；写台账 |
+| `x_reply` | `{id, text, confirm?}` | 过语感/长度/链接闸门；超额度 → 拒绝；写台账 |
+| `x_post` | `{text, confirm?, replyTo?}` | 字数≤280 加权；超额度 → 拒绝；写台账；返回 tweet id/url |
+| `x_write_status` | `{}` | 返回四个开关 + 今日已用/上限 + 台账最后 5 条 |
+
+**闸门顺序（每个写工具都必须逐条过，缺一不可）**：
+① 总闸 `allowWrite` → ② 单项开关 → ③ `confirm`（若 require）→ ④ 当日额度 → ⑤ 去重（台账/seen）→ ⑥ 内容闸门（仅 reply/post）→ ⑦ 执行 → ⑧ 写台账。
+**任何一条不过：返回 `{ok:false, blocked:'<哪条闸门>', reason:'中文原因'}`，绝不执行。**
+
+## 3 台账与去重
+
+- 台账：`$DSH_HOME/x-duty/write-ledger.jsonl`（**只追加**），每行 `{ts,action,target,ok,tweetId,blocked,note}`；**不写凭据、不写正文全文**（回复只存前 40 字）。
+- 去重：`$DSH_HOME/x-duty/write-seen.json` `{liked:{id:ts}, followed:{handle:ts}, replied:{id:ts}, posted:{id:ts}}`。
+- 语感闸门（reply）：开头八股黑名单（说得好/学习了/支持/顶/感谢分享/受教了…）、纯表情、与最近 20 条自己回复的 bigram 相似度 >0.8、长度 < replyMinChars、含链接而 replyAllowLinks=false ⇒ 一律拒。
+
+## 4 宿主侧（index.js / client.js）
+
+- 注册 `x_like / x_follow / x_reply / x_post / x_write_status` 五个工具（转发 MCP）。
+- 设置页新增「写操作」区块：一个总闸 + 四个开关 + 两个确认开关 + 四个额度 + 回复字数下限/链接开关；总闸关时其余置灰。
+- `x_status` 返回值里加 `write:{allowWrite, allowLike, allowFollow, allowReply, allowPost, today:{...}}`，让日报能看到"今天能不能动手、动了几次"。
+
+## 5 duty 章程（prompts/duty.md）新增一节
+
+「## 写操作（只有开关打开时才做）」：
+- 开关没开 ⇒ 连想都别想，日报里只列「值得回的帖」。
+- 开关开了 ⇒ 回复只回「值得回的帖」里排前 3 的，每条必须带一个具体信息（数字/反例/可执行动作）；点赞只给真正读过的；关注只给「连续两次看到他发同类好帖」的；发帖只在有实测回执时发。
+- **宁可少做，不许刷量**；每次动手在日报里记一行（做了什么、对谁、为什么）。

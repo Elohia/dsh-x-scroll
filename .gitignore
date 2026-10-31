@@ -16,6 +16,9 @@ duty.md.new
 *.log
 qrcode_login.png
 
+# 验收用临时家目录（probe.mjs / smoke.mjs 用）
+.smoke-home/
+
 # 开发期临时物
 .ui-check/
 .ui-profile/

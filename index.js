@@ -70,6 +70,24 @@ const DEFAULTS = {
   /** ⚠️ 只有 DSH credentials 服务拿不到时才用这个明文兜底 */
   smtpPass: '',
   deliverToast: false,
+  // ── 写操作（CONTRACT v0.2）：默认全关；总闸关着时四个单项一律无效（fail-closed）──
+  /** 总闸 */
+  allowWrite: false,
+  allowLike: false,
+  allowFollow: false,
+  allowReply: false,
+  allowPost: false,
+  /** 回复/发帖前是否必须 confirm:true */
+  replyRequireConfirm: true,
+  postRequireConfirm: true,
+  /** 每日额度（MCP 侧按台账执行） */
+  maxLikesPerDay: 20,
+  maxFollowsPerDay: 10,
+  maxRepliesPerDay: 5,
+  maxPostsPerDay: 3,
+  /** 回复正文下限（治"说得好"），以及回复里是否允许放链接 */
+  replyMinChars: 15,
+  replyAllowLinks: false,
   /** 撞到限流/风控信号后冷却多少小时（这期间一律不许再跑） */
   riskCooldownHours: 24,
 }
@@ -121,6 +139,12 @@ export function apply(ctx, config) {
     return out
   }
 
+  /** 数字字段：有限数就走夹逼，否则保留默认值 */
+  const intOf = (v, dflt, min, max) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.max(min, Math.min(Math.round(n), max)) : dflt
+  }
+
   const clampPatch = (patch) => {
     const p = { ...patch }
     if ('perDirection' in p) p.perDirection = Math.max(5, Math.min(Number(p.perDirection) || 20, 50))
@@ -138,6 +162,21 @@ export function apply(ctx, config) {
     if ('readReplies' in p) p.readReplies = Boolean(p.readReplies)
     if ('twitterBin' in p) p.twitterBin = String(p.twitterBin || '').trim()
     if ('proxy' in p) p.proxy = String(p.proxy || '').trim()
+    // ── 写操作（v0.2）：布尔一律强转；额度/字数夹逼 ──
+    if ('allowWrite' in p) p.allowWrite = Boolean(p.allowWrite)
+    if ('allowLike' in p) p.allowLike = Boolean(p.allowLike)
+    if ('allowFollow' in p) p.allowFollow = Boolean(p.allowFollow)
+    if ('allowReply' in p) p.allowReply = Boolean(p.allowReply)
+    if ('allowPost' in p) p.allowPost = Boolean(p.allowPost)
+    if ('replyRequireConfirm' in p) p.replyRequireConfirm = Boolean(p.replyRequireConfirm)
+    if ('postRequireConfirm' in p) p.postRequireConfirm = Boolean(p.postRequireConfirm)
+    if ('replyAllowLinks' in p) p.replyAllowLinks = Boolean(p.replyAllowLinks)
+    // 上下限与 lib/writegate.mjs 的 asInt 保持一致（否则设置页存进去的数会被 MCP 再夹一次）
+    if ('maxLikesPerDay' in p) p.maxLikesPerDay = intOf(p.maxLikesPerDay, DEFAULTS.maxLikesPerDay, 0, 500)
+    if ('maxFollowsPerDay' in p) p.maxFollowsPerDay = intOf(p.maxFollowsPerDay, DEFAULTS.maxFollowsPerDay, 0, 500)
+    if ('maxRepliesPerDay' in p) p.maxRepliesPerDay = intOf(p.maxRepliesPerDay, DEFAULTS.maxRepliesPerDay, 0, 500)
+    if ('maxPostsPerDay' in p) p.maxPostsPerDay = intOf(p.maxPostsPerDay, DEFAULTS.maxPostsPerDay, 0, 100)
+    if ('replyMinChars' in p) p.replyMinChars = intOf(p.replyMinChars, DEFAULTS.replyMinChars, 0, 280)
     if ('headlessProfile' in p) p.headlessProfile = String(p.headlessProfile || 'headless').trim() || 'headless'
     if ('directions' in p) {
       const lines = String(p.directions || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 12)
@@ -592,15 +631,76 @@ export function apply(ctx, config) {
     }
   }
 
+  /** 写操作本地视图（开关以 config 为唯一事实源；今日用量由 MCP 台账补） */
+  const localWriteView = () => ({
+    allowWrite: Boolean(cfg.allowWrite),
+    allowLike: Boolean(cfg.allowLike),
+    allowFollow: Boolean(cfg.allowFollow),
+    allowReply: Boolean(cfg.allowReply),
+    allowPost: Boolean(cfg.allowPost),
+    today: {
+      likes: 0, follows: 0, replies: 0, posts: 0,
+      limits: { likes: cfg.maxLikesPerDay, follows: cfg.maxFollowsPerDay, replies: cfg.maxRepliesPerDay, posts: cfg.maxPostsPerDay },
+    },
+  })
+
+  /** 写操作状态：开关来自 config；今日已用/上限问 MCP（拿不到就回 0，不编数字） */
+  const writeStatus = async () => {
+    refreshCfg()
+    const write = localWriteView()
+    /** MCP 的台账用 like/follow/reply/post（单数），这里统一成复数；两边形状不同也吃得下 */
+    const num = (v, dflt) => { const n = Number(v); return Number.isFinite(n) ? n : dflt }
+    const countsOf = (src, fallback) => ({
+      likes: num(src?.likes ?? src?.like, fallback.likes),
+      follows: num(src?.follows ?? src?.follow, fallback.follows),
+      replies: num(src?.replies ?? src?.reply, fallback.replies),
+      posts: num(src?.posts ?? src?.post, fallback.posts),
+    })
+    try {
+      const ws = await call('x_write_status', {}, { timeoutMs: 30000 })
+      if (ws && typeof ws === 'object') {
+        const used = ws.used && typeof ws.used === 'object' ? ws.used : null
+        const today = ws.today && typeof ws.today === 'object' ? ws.today : null
+        const todaySrc = today ? { ...(used || {}), ...today } : used
+        if (todaySrc) write.today = { ...write.today, ...countsOf({ ...write.today, ...todaySrc }, write.today) }
+        if (todaySrc && todaySrc.date) write.today.date = String(todaySrc.date)
+        if (ws.limits && typeof ws.limits === 'object') write.today.limits = countsOf({ ...write.today.limits, ...ws.limits }, write.today.limits)
+        if (Array.isArray(ws.recent)) write.ledger = ws.recent.slice(0, 5)
+        else if (Array.isArray(ws.ledger)) write.ledger = ws.ledger.slice(0, 5)
+        if (ws.require && typeof ws.require === 'object') write.require = ws.require
+        if (ws.content && typeof ws.content === 'object') write.content = ws.content
+        if (typeof ws.configOk === 'boolean') write.configOk = ws.configOk
+        // 开关以 config 为事实源；这里只报「两边不一致」，方便排查
+        const flags = ['allowWrite', 'allowLike', 'allowFollow', 'allowReply', 'allowPost']
+        const mismatch = flags.filter((k) => typeof ws[k] === 'boolean' && ws[k] !== write[k])
+        if (mismatch.length) write.mismatch = mismatch
+        if (ws.ok === false && ws.error) write.error = String(ws.error)
+      }
+    } catch (e) { write.error = String(e?.message ?? e) }
+    return write
+  }
+
+  /** 宿主侧 fail-closed：总闸/单项开关关着就绝不把请求发给 MCP（MCP 里还有一遍同样的闸门） */
+  const WRITE_LABEL = { Like: '点赞', Follow: '关注', Reply: '回复', Post: '发帖' }
+  const writeGate = (kind) => {
+    refreshCfg()
+    if (!cfg.allowWrite) return { ok: false, blocked: 'allowWrite', reason: '写操作总闸关着：先到设置页「写操作」打开总闸' }
+    const key = 'allow' + kind
+    if (!cfg[key]) return { ok: false, blocked: key, reason: '写操作开关「' + (WRITE_LABEL[kind] || kind) + '」关着' }
+    return null
+  }
+
   tool({
     name: 'x_status',
     description: '看「刷 X」今天的状态与可用性：twitter-cli 版本、代理、凭据、账号、跑没跑、日报在哪、下次什么时候跑。\n'
+      + '另外返回 write 块：写操作四个开关 + 今日已用/上限（来源 x_write_status），动手前先看它。\n'
       + '返回 ok=false 就说明现在不能跑（看 error：代理 / 凭据 / 登录）。',
     parameters: {},
     async execute() {
       let live = null
       try { live = await call('x_status', {}, { timeoutMs: 60000 }) } catch (e) { live = { ok: false, error: String(e?.message ?? e) } }
-      return { ...safe(live), ...localStatus(), ok: Boolean(live?.ok) }
+      const write = await writeStatus()
+      return { ...safe(live), ...localStatus(), write, ok: Boolean(live?.ok) }
     },
   })
 
@@ -677,6 +777,97 @@ export function apply(ctx, config) {
     async execute() { return call('x_growth', {}, { timeoutMs: 120000 }) },
   })
 
+  /* ── 写操作（CONTRACT v0.2）：默认全关；宿主与 MCP 各过一遍同样的闸门 ── */
+
+  tool({
+    name: 'x_like',
+    description: '给一条推文点赞（写操作）。要 **总闸 allowWrite + allowLike** 都开；额度/去重/已赞由 MCP 台账把关。\n'
+      + '返回 ok=true，或 {ok:false, blocked:"<闸门>", reason:"中文原因"}。⚠️ 只给真正读过的帖点赞。',
+    parameters: {
+      id: { type: 'string', description: '推文 ID' },
+      confirm: { type: 'boolean', description: '确认执行（配置要求时必填 true）' },
+    },
+    async execute(args) {
+      const gate = writeGate('Like')
+      if (gate) return gate
+      const id = String(args.id ?? '').trim()
+      if (!id) return { ok: false, blocked: 'args', reason: 'id 不能为空' }
+      return call('x_like', { id, confirm: Boolean(args.confirm) }, { timeoutMs: 120000 })
+    },
+  })
+
+  tool({
+    name: 'x_follow',
+    description: '关注一个 X 账号（写操作）。要 **总闸 allowWrite + allowFollow** 都开；额度/已关注由 MCP 台账把关。\n'
+      + '返回 ok=true，或 {ok:false, blocked, reason}。⚠️ 只关注「连续两次看到发同类好帖」的人。',
+    parameters: {
+      handle: { type: 'string', description: '账号 handle（带不带 @ 都行）' },
+      confirm: { type: 'boolean', description: '确认执行（配置要求时必填 true）' },
+    },
+    async execute(args) {
+      const gate = writeGate('Follow')
+      if (gate) return gate
+      const handle = String(args.handle ?? '').replace(/^@/, '').trim()
+      if (!handle) return { ok: false, blocked: 'args', reason: 'handle 不能为空' }
+      return call('x_follow', { handle, confirm: Boolean(args.confirm) }, { timeoutMs: 120000 })
+    },
+  })
+
+  tool({
+    name: 'x_reply',
+    description: '回复一条推文（写操作）。要 **总闸 allowWrite + allowReply** 都开；MCP 还会过长度/语感/链接/额度/去重闸门。\n'
+      + '返回 ok=true，或 {ok:false, blocked, reason}。⚠️ 每条回复必须带一个具体信息（数字/反例/可执行动作）。',
+    parameters: {
+      id: { type: 'string', description: '要回复的推文 ID' },
+      text: { type: 'string', description: '回复正文' },
+      confirm: { type: 'boolean', description: '确认执行（replyRequireConfirm 为 true 时必填 true）' },
+    },
+    async execute(args) {
+      const gate = writeGate('Reply')
+      if (gate) return gate
+      const id = String(args.id ?? '').trim()
+      const text = String(args.text ?? '').trim()
+      if (!id) return { ok: false, blocked: 'args', reason: 'id 不能为空' }
+      if (!text) return { ok: false, blocked: 'args', reason: 'text 不能为空' }
+      return call('x_reply', { id, text, confirm: Boolean(args.confirm) }, { timeoutMs: 120000 })
+    },
+  })
+
+  tool({
+    name: 'x_post',
+    description: '发一条推文（写操作，含引用转推请用 replyTo）。要 **总闸 allowWrite + allowPost** 都开；MCP 还会过字数/额度/去重闸门。\n'
+      + '返回 ok=true + tweet id/url，或 {ok:false, blocked, reason}。⚠️ 只在有实测回执时发。',
+    parameters: {
+      text: { type: 'string', description: '正文（≤280 加权）' },
+      confirm: { type: 'boolean', description: '确认执行（postRequireConfirm 为 true 时必填 true）' },
+      replyTo: { type: 'string', description: '引用/回复的推文 ID（可省）' },
+    },
+    async execute(args) {
+      const gate = writeGate('Post')
+      if (gate) return gate
+      const text = String(args.text ?? '').trim()
+      if (!text) return { ok: false, blocked: 'args', reason: 'text 不能为空' }
+      const payload = { text, confirm: Boolean(args.confirm) }
+      const replyTo = String(args.replyTo ?? '').trim()
+      if (replyTo) payload.replyTo = replyTo
+      return call('x_post', payload, { timeoutMs: 120000 })
+    },
+  })
+
+  tool({
+    name: 'x_write_status',
+    description: '看写操作今天能不能动手：四个开关 + 今日已用/上限 + 台账最后 5 条。\n'
+      + '写之前先用它自检；返回 ok=false 时看 error，别硬试。',
+    parameters: {},
+    async execute() {
+      try { return await call('x_write_status', {}, { timeoutMs: 60000 }) }
+      catch (e) {
+        refreshCfg()
+        return { ok: false, error: String(e?.message ?? e), write: localWriteView() }
+      }
+    },
+  })
+
   tool({
     name: 'x_run',
     description: '**立刻跑一轮**（不等 09:30）：先过环境门禁（x_status + x_whoami），再起一个 headless 会话，\n'
@@ -695,6 +886,8 @@ export function apply(ctx, config) {
       + 'sort(general|latest|popular), readReplies, reportLevel(full|brief), mirrorDir, workspace, headlessProfile, twitterBin, proxy。\n'
       + '投递：sessionTarget(off|latest|fixed), sessionId, sessionSpeak, deliverMail, smtpHost, smtpPort, smtpSecure, '
       + 'smtpUser, smtpFrom, mailTo, deliverToast。\n'
+      + '写操作（默认全关）：allowWrite(总闸), allowLike, allowFollow, allowReply, allowPost, replyRequireConfirm, postRequireConfirm, '
+      + 'maxLikesPerDay(0-200), maxFollowsPerDay(0-100), maxRepliesPerDay(0-50), maxPostsPerDay(0-20), replyMinChars(1-500), replyAllowLinks。\n'
       + '⚠️ SMTP 授权码**不要**走这个工具（会明文落盘）；用设置页填，存进 DSH credentials。',
     parameters: { patch: { type: 'object', additionalProperties: true, description: '要改的字段（可省）' } },
     async execute(args) {
@@ -781,7 +974,9 @@ export function apply(ctx, config) {
     if (!cfg.overlayMcp) return null
     const file = join(stateDir, 'headless-overlay.yml')
     const posix = (p) => String(p).replace(/\\/g, '/')
-    const whitelist = ['x_status', 'x_whoami', 'x_search', 'x_user', 'x_posts', 'x_tweet', 'x_growth']
+    // 读工具常备；写工具也放进来（真正能不能写由 MCP 的七道闸门按 config 判定，不靠白名单兜底）
+    const whitelist = ['x_status', 'x_whoami', 'x_search', 'x_user', 'x_posts', 'x_tweet', 'x_growth',
+      'x_like', 'x_follow', 'x_reply', 'x_post', 'x_write_status']
     const bin = String(cfg.twitterBin || '').trim()
     const proxy = String(cfg.proxy || '').trim()
     const yml = [

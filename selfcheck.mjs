@@ -3,9 +3,12 @@
  * selfcheck.mjs —— dsh-x-scroll 环境自检（零依赖，Node >= 22）
  * ============================================================================
  * 用一条命令回答"这台机器现在能不能跑这一轮"：
- *   ① 环境：twitter 二进制在哪、CLI 版本、代理端口通不通
+ *   ① 环境：twitter 二进制在哪、CLI 版本、代理端口通不通、写操作开关状态
  *   ② 凭据：TWITTER_AUTH_TOKEN / TWITTER_CT0 有没有（**只报有无，不显示值**）
  *   ③ 连通：真跑一次 `twitter status --json`，看账号能不能读出来
+ *
+ * 写操作（CONTRACT v0.2）只**报状态**、不改变退出码：总闸关着就是只读；开着也只说明"允许"，
+ * 真正能不能动手还要过 MCP 的额度 / 确认 / 去重 / 内容闸门。
  *
  * 用法：
  *   node selfcheck.mjs           人看的三段输出
@@ -332,12 +335,62 @@ function childEnv({ token, ct0, proxy, direct }) {
   return env
 }
 
+/* ───────────────────────── 写操作开关状态（只报，不判失败） ───────────────────────── */
+
+const WRITE_SWITCHES = [
+  ['allowLike', '点赞'],
+  ['allowFollow', '关注'],
+  ['allowReply', '回复'],
+  ['allowPost', '发帖'],
+]
+
+/** 宽松布尔：config.json 手改成 "true" / 1 也认（与 lib/writegate.mjs 的 asBool 一致） */
+function asBool(v) {
+  if (v === true || v === 1) return true
+  if (v === false || v === 0) return false
+  const s = String(v ?? '').trim().toLowerCase()
+  return s === 'true' || s === '1' || s === 'yes' || s === 'on'
+}
+
+function writeView() {
+  const switches = WRITE_SWITCHES.map(([key, label]) => ({ key, label, on: asBool(config[key]) }))
+  const master = asBool(config.allowWrite)
+  const enabled = master ? switches.filter((s) => s.on) : []
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
+  return {
+    master,
+    switches,
+    enabled: enabled.map((s) => s.label),
+    count: enabled.length,
+    limits: {
+      likes: num(config.maxLikesPerDay, 20),
+      follows: num(config.maxFollowsPerDay, 10),
+      replies: num(config.maxRepliesPerDay, 5),
+      posts: num(config.maxPostsPerDay, 3),
+    },
+    requireConfirm: {
+      reply: config.replyRequireConfirm === undefined ? true : asBool(config.replyRequireConfirm),
+      post: config.postRequireConfirm === undefined ? true : asBool(config.postRequireConfirm),
+    },
+  }
+}
+
+/** 人看的一行：全关 / 已开 N 项（含额度与确认状态） */
+function writeText(w) {
+  if (!w.master) return '全关（总闸 allowWrite=false，默认；本轮只读）'
+  if (!w.count) return '总闸已开，但四个单项开关全关（不会动手）'
+  const l = w.limits
+  const c = w.requireConfirm
+  return `已开 ${w.count} 项：${w.enabled.join(' / ')}（每日上限 点赞 ${l.likes} / 关注 ${l.follows} / 回复 ${l.replies} / 发帖 ${l.posts}；回复${c.reply ? '需确认' : '免确认'}、发帖${c.post ? '需确认' : '免确认'}）`
+}
+
 /* ───────────────────────────── 主流程 ───────────────────────────── */
 
 async function main() {
   const startedAt = new Date()
   const failures = []
   const checks = {}
+  const write = writeView()
 
   // ① 环境：二进制 / 版本 / 代理
   const bin = await resolveTwitterBin()
@@ -408,6 +461,7 @@ async function main() {
   checks.proxy = { ok: Boolean(proxy.url) || Boolean(proxy.direct), direct: Boolean(proxy.direct), url: proxy.url, source: proxy.source, error: proxy.error || '', candidates: proxy.candidates.map((c) => ({ url: c.url, source: c.source, strict: Boolean(c.strict), ok: c.ok, ms: c.ms, error: c.error })) }
   checks.credentials = credView
   checks.account = account
+  checks.write = write
   checks.dutyHome = dutyHome
   checks.configFound = Boolean(readJson(configPath))
 
@@ -454,6 +508,7 @@ async function main() {
   }
   const probes = (proxy.candidates || []).map((c) => `${new URL(c.url).host} ${c.ok ? '✓ ' + c.ms + 'ms' : '✗ ' + (c.error || '不通')}`)
   if (probes.length) line(`             探测：${probes.join(' · ')}`)
+  line(`  ${write.master ? '⚠' : '•'} 写操作    ${writeText(write)}`)
   line()
 
   line('② 凭据（只报有无，不显示值）')

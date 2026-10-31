@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
       '  border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));',
       '  background:var(--dsw-alias-bg-overlay,rgba(128,128,128,.12));color:inherit;font-family:inherit;}',
       '[data-x-input]:focus{outline:none;border-color:#3b82f6;}',
+      '[data-x-input][disabled]{opacity:.55;cursor:default;}',
       '[data-x-row] > [data-x-input]{flex:1 1 190px;width:auto;min-width:0;}',
       '[data-x-row] > [data-x-input][data-x-num]{flex:0 0 96px;width:96px;text-align:center;margin-left:auto;}',
       '[data-x-row] > [data-x-btn]{flex:none;}',
@@ -145,6 +146,12 @@ window.__ModuleLoader__.load({
       const [dshBin, setDshBin] = React.useState(null)
       const [twitterBin, setTwitterBin] = React.useState(null)
       const [proxy, setProxy] = React.useState(null)
+      // 写操作（CONTRACT v0.2）：额度/字数用本地草稿，避免 6 秒轮询冲掉正在输入的数字
+      const [maxLikes, setMaxLikes] = React.useState(null)
+      const [maxFollows, setMaxFollows] = React.useState(null)
+      const [maxReplies, setMaxReplies] = React.useState(null)
+      const [maxPosts, setMaxPosts] = React.useState(null)
+      const [replyMin, setReplyMin] = React.useState(null)
 
       // 环境自检（原「扫码登录」区块）
       const [sc, setSc] = React.useState(null)
@@ -180,12 +187,17 @@ window.__ModuleLoader__.load({
         if (dshBin === null) setDshBin(cfg.dshBin || '')
         if (twitterBin === null) setTwitterBin(cfg.twitterBin || '')
         if (proxy === null) setProxy(cfg.proxy || '')
+        if (maxLikes === null) setMaxLikes(String(cfg.maxLikesPerDay ?? 20))
+        if (maxFollows === null) setMaxFollows(String(cfg.maxFollowsPerDay ?? 10))
+        if (maxReplies === null) setMaxReplies(String(cfg.maxRepliesPerDay ?? 5))
+        if (maxPosts === null) setMaxPosts(String(cfg.maxPostsPerDay ?? 3))
+        if (replyMin === null) setReplyMin(String(cfg.replyMinChars ?? 15))
         if (sessionId === null) setSessionId(cfg.sessionId || '')
         if (smtpHost === null) setSmtpHost(cfg.smtpHost || 'smtp.qq.com')
         if (smtpPort === null) setSmtpPort(String(cfg.smtpPort ?? 465))
         if (smtpUser === null) setSmtpUser(cfg.smtpUser || '')
         if (mailTo === null) setMailTo(cfg.mailTo || '')
-      }, [cfg, dirs, runAt, mirror, ws, perDir, deepRead, dshBin, twitterBin, proxy, sessionId, smtpHost, smtpPort, smtpUser, mailTo])
+      }, [cfg, dirs, runAt, mirror, ws, perDir, deepRead, dshBin, twitterBin, proxy, maxLikes, maxFollows, maxReplies, maxPosts, replyMin, sessionId, smtpHost, smtpPort, smtpUser, mailTo])
 
       const flash = (text, tone) => { setMsg(text); setMsgTone(tone || '') }
       const patch = async (p, what) => {
@@ -378,6 +390,17 @@ window.__ModuleLoader__.load({
       const sw = (k) => Boolean(cfg?.[k])
       const dirCount = String(dirs || '').split(/\r?\n/).filter((s) => s.trim()).length
       const envOk = Boolean(sc?.ok)
+      const writeOff = !cfg?.allowWrite
+      /** 写操作额度行：总闸关时 disabled；失焦按与 index.js 相同的上下限夹逼后自动保存 */
+      const writeNumRow = (label, note, value, setValue, key, min, max, dflt) => h('div', { 'data-x-row': '' },
+        h('div', { 'data-x-grow': '' },
+          h('div', { 'data-x-label': '' }, label),
+          note ? h('div', { 'data-x-note': '' }, note) : null),
+        h('input', {
+          'data-x-input': '', 'data-x-num': '', value: value || '', disabled: writeOff,
+          onChange: (e) => setValue(e.target.value.replace(/[^\d]/g, '')),
+          onBlur: () => autoSave({ [key]: Math.max(min, Math.min(Number.isFinite(Number(value)) ? Number(value) : dflt, max)) }, label),
+        }))
 
       return h('div', { 'data-x-page': '' },
 
@@ -492,6 +515,67 @@ window.__ModuleLoader__.load({
           }),
           h('div', { 'data-x-row': '' },
             h('button', { 'data-x-btn': '', disabled: Boolean(busy), onClick: onSaveTexts }, '再保存一次（其实已经自动存了）'))),
+
+        /* ── 写操作（CONTRACT v0.2：默认全关；总闸关时整块置灰）── */
+        h('div', { 'data-x-sec': '' },
+          h('div', { 'data-x-h': '', 'data-dot': '✍️' }, '写操作（点赞 / 关注 / 回复 / 发帖）'),
+          h(ToggleRow, {
+            label: '总闸：允许写操作',
+            note: '关着时下面四个开关一律无效（fail-closed）；打开只是"允许"，还得开单项，并且受每日额度与台账去重约束',
+            on: sw('allowWrite'),
+            onChange: (v) => patch({ allowWrite: v }, '写操作总闸'),
+          }),
+          writeOff ? h('div', { 'data-x-note': '', style: { color: '#fbbf24' } },
+            '总闸关着：下面的开关与额度都不生效（只读模式）。') : null,
+          h('div', { 'data-x-sub': '', style: writeOff ? { opacity: 0.45 } : undefined },
+            h(ToggleRow, {
+              label: '点赞',
+              note: '只给真正读过的帖；已赞过会被 MCP 台账拒绝',
+              on: sw('allowLike'), disabled: writeOff,
+              onChange: (v) => patch({ allowLike: v }, '点赞开关'),
+            }),
+            h(ToggleRow, {
+              label: '关注',
+              note: '只关注「连续两次看到发同类好帖」的人；已关注会被拒绝',
+              on: sw('allowFollow'), disabled: writeOff,
+              onChange: (v) => patch({ allowFollow: v }, '关注开关'),
+            }),
+            h(ToggleRow, {
+              label: '回复',
+              note: 'MCP 还过长度 / 语感 / 链接 / 额度 / 去重闸门；只回「值得回的帖」前 3',
+              on: sw('allowReply'), disabled: writeOff,
+              onChange: (v) => patch({ allowReply: v }, '回复开关'),
+            }),
+            h(ToggleRow, {
+              label: '发帖',
+              note: '含引用转推；只在有实测回执时发',
+              on: sw('allowPost'), disabled: writeOff,
+              onChange: (v) => patch({ allowPost: v }, '发帖开关'),
+            }),
+            h(ToggleRow, {
+              label: '回复前必须 confirm:true',
+              note: '工具调用没带 confirm=true 就直接拒绝（防模型顺手回）',
+              on: sw('replyRequireConfirm'), disabled: writeOff,
+              onChange: (v) => patch({ replyRequireConfirm: v }, '回复确认'),
+            }),
+            h(ToggleRow, {
+              label: '发帖前必须 confirm:true',
+              note: '工具调用没带 confirm=true 就直接拒绝',
+              on: sw('postRequireConfirm'), disabled: writeOff,
+              onChange: (v) => patch({ postRequireConfirm: v }, '发帖确认'),
+            }),
+            writeNumRow('每日点赞上限', '0 = 不给点；默认 20', maxLikes, setMaxLikes, 'maxLikesPerDay', 0, 500, 20),
+            writeNumRow('每日关注上限', '0 = 不关注；默认 10', maxFollows, setMaxFollows, 'maxFollowsPerDay', 0, 500, 10),
+            writeNumRow('每日回复上限', '0 = 不回复；默认 5', maxReplies, setMaxReplies, 'maxRepliesPerDay', 0, 500, 5),
+            writeNumRow('每日发帖上限', '0 = 不发帖；默认 3', maxPosts, setMaxPosts, 'maxPostsPerDay', 0, 100, 3),
+            writeNumRow('回复字数下限', '治"说得好"；默认 15，0 = 不卡长度', replyMin, setReplyMin, 'replyMinChars', 0, 280, 15),
+            h(ToggleRow, {
+              label: '回复里允许放链接',
+              note: '冷启动期应关；MCP 会把带链接的回复直接拒掉',
+              on: sw('replyAllowLinks'), disabled: writeOff,
+              onChange: (v) => patch({ replyAllowLinks: v }, '回复链接开关'),
+            })),
+          h('div', { 'data-x-note': '' }, '⚠️ 写操作只解决"能不能"：额度解决"多少"，台账（write-ledger.jsonl）解决"可追"。宁可不做，不许刷量。')),
 
         /* ── 怎么把结果给你 ── */
         h('div', { 'data-x-sec': '' },

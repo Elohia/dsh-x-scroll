@@ -1,7 +1,7 @@
 {
   "name": "dsh-x-scroll",
-  "version": "0.1.0",
-  "description": "DSH 插件：每天替你刷一轮 X（Twitter）—— 按方向读帖、写出热点与可回帖清单、附账号涨粉数据",
+  "version": "0.2.0",
+  "description": "DSH 插件：每天刷一轮 X（Twitter）读帖写日报；点赞/关注/回复/发帖默认全关，需在设置里显式打开并受额度与台账约束",
   "type": "module",
   "main": "index.js",
   "exports": {

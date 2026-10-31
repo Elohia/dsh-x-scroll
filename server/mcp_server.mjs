@@ -2,20 +2,26 @@
 /**
  * server/mcp_server.mjs —— 「刷 X」的 MCP 服务器（stdio，逐行 JSON-RPC）
  * ============================================================================
- * 干什么：把这边的 x_* 工具转成 twitter-cli 的**只读**子命令，结构化吐回去。
- * 数据从哪来：twitter-cli 0.8.5（status / whoami / search / user / user-posts / tweet / followers）。
+ * 干什么：把这边的 x_* 工具转成 twitter-cli 子命令，结构化吐回去。
+ * 数据从哪来：twitter-cli 0.8.5（status / whoami / search / user / user-posts / tweet / followers / like / follow / reply / post / quote）。
  * 真实取值全部在 ../lib/xcli.mjs：找二进制、注入凭据、探测代理、解析 --json。
  * 这个文件**只管协议和契约字段**，不重复实现那些事。
+ *
+ * 写操作（CONTRACT v0.2）：x_like / x_follow / x_reply / x_post 四个写工具，
+ * 以及 x_write_status。**开关默认全关**；每个写工具都先过 ../lib/writegate.mjs 的七道闸门
+ * （总闸 → 单项开关 → confirm → 当日额度 → 去重 → 内容闸门 → 执行 → 台账），
+ * 任何一条不过就返回 {ok:false, blocked:'<闸门名>', reason}，绝不落笔。
  *
  * 协议层照抄上一代插件（initialize / notifications/initialized / notifications/cancelled /
  * ping / tools/list / tools/call），不自己发明：stdio 上**一行一个 JSON-RPC**，
  * 一行一条，能并发收，但工具调用串行执行（twitter-cli 有速率限制，且避免同时挤爆代理）。
  *
  * 🔴 硬约束：
- *   1. **只读**：不实现 post / reply / like / retweet / follow，连想都别想。
+ *   1. **写操作默认全关**：总闸 allowWrite=false 时四个写工具一律 blocked，连 CLI 都不启动。
+ *      开关只解决"能不能"，额度解决"多少"，台账解决"可追"；不做任何自动绕过。
  *   2. 坏通道**不抛异常**：代理不通 / 凭据缺失 / 找不到 CLI，都返回 {ok:false,error}，
  *      让 host 去写"失败日报"，而不是把整个宿主带崩。
- *   3. 凭据只注入子进程 env，日志只写"有/无"和来源。
+ *   3. 凭据只注入子进程 env，日志只写"有/无"和来源；台账不写凭据、不写正文全文。
  *
  * 环境变量：
  *   X_DUTY_HOME  插件家目录（日志落这）
@@ -28,8 +34,13 @@ import {
   VERSION,
   blueRatioOf,
   enrichAuthors,
+  followUser,
+  likeTweet,
   log,
+  postTweet,
+  quoteTweet,
   redact,
+  replyTweet,
   resolveBin,
   resolveCredentials,
   resolveProxy,
@@ -42,6 +53,7 @@ import {
   whoami,
   xHome,
 } from '../lib/xcli.mjs'
+import { runGated, writeSummary } from '../lib/writegate.mjs'
 
 const HOME = xHome()
 
@@ -111,8 +123,33 @@ async function toolStatus() {
   if (payload.proxy.source !== 'direct' && proxy.candidates && proxy.candidates.length) {
     payload.proxy.candidates = proxy.candidates
   }
+  // CONTRACT v0.2 §4：日报要能看到"今天能不能动手、动了几次"
+  payload.write = writeSummaryBlock()
   if (problems.length) payload.error = problems.join('；')
   return payload
+}
+
+/**
+ * 写开关 + 今日用量（x_status 用）。
+ * 只挑 x_status 契约里要的字段，不把最近台账整段塞进去（那是 x_write_status 的事）。
+ * 读不到 config.json ⇒ 全部 false（fail-closed）。
+ */
+function writeSummaryBlock() {
+  try {
+    const s = writeSummary()
+    return {
+      allowWrite: s.allowWrite,
+      allowLike: s.allowLike,
+      allowFollow: s.allowFollow,
+      allowReply: s.allowReply,
+      allowPost: s.allowPost,
+      today: s.today,
+      limits: s.limits,
+    }
+  } catch (e) {
+    log('读写开关失败（按全关处理）：' + errText(e))
+    return { allowWrite: false, allowLike: false, allowFollow: false, allowReply: false, allowPost: false, today: { date: '', like: 0, follow: 0, reply: 0, post: 0 }, limits: {} }
+  }
 }
 
 /** 当前账号：契约 {ok, handle, name, followers, following, tweets, verified, createdAt} */
@@ -253,6 +290,131 @@ async function toolGrowth() {
   }
 }
 
+/* ────────────────────────────── 写工具（CONTRACT v0.2） ────────────────────────────── */
+
+/**
+ * 输入形状检查：在七道闸门之前先挡掉"明显没法执行"的入参。
+ * 它不是闸门之一（闸门见 lib/writegate.mjs），所以 blocked 记 'input'，方便和七道闸门区分。
+ */
+function inputBlock(reason, extra) {
+  return Object.assign({ ok: false, blocked: 'input', reason }, extra || {})
+}
+
+/** 闸门拒绝 / 执行失败的统一返回：blocked 指明是哪一条 */
+function gateFail(action, target, r) {
+  const out = { ok: false, blocked: r.blocked || 'unknown', reason: r.reason || '被闸门拦下', action }
+  if (target) out.target = target
+  if (r.code) out.code = r.code
+  if (r.blocked === 'execute' && r.code === 'rate_limited') {
+    out.hint = '碰到 429 限流：停手，等 30-60 秒再说一次，别连续重试'
+  }
+  return out
+}
+
+function writeData(result) {
+  if (!result || typeof result !== 'object') return {}
+  return result.data && typeof result.data === 'object' ? result.data : result
+}
+
+/** 点赞：{id, confirm?} —— 已赞过由去重闸门拦，不重复点 */
+async function toolLike(args) {
+  const a = args || {}
+  const id = clean(a.id).replace(/^#/, '')
+  if (!/^\d{5,25}$/.test(id)) return inputBlock('id 必须是纯数字推文 id（5-25 位）', { action: 'like', id })
+  const r = await runGated('like', { target: id, confirm: a.confirm }, () => likeTweet(id))
+  if (!r.ok) return gateFail('like', id, r)
+  const d = writeData(r.result)
+  return {
+    ok: true,
+    action: 'like',
+    id,
+    tweetId: String(d.id || id),
+    url: 'https://x.com/i/status/' + id,
+    today: r.today,
+    ledger: r.entry,
+    note: '已点赞，并记进台账（同一条不会点第二次）',
+  }
+}
+
+/** 关注：{handle, confirm?} —— 已关注由去重闸门拦 */
+async function toolFollow(args) {
+  const a = args || {}
+  const handle = clean(a.handle).replace(/^@/, '')
+  if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
+    return inputBlock('handle 不合法：X 用户名只能是字母 / 数字 / 下划线，≤15 位（不带 @）', { action: 'follow', handle })
+  }
+  const r = await runGated('follow', { target: handle, confirm: a.confirm }, () => followUser(handle))
+  if (!r.ok) return gateFail('follow', handle, r)
+  const d = writeData(r.result)
+  return {
+    ok: true,
+    action: 'follow',
+    handle,
+    userId: String(d.userId || ''),
+    url: 'https://x.com/' + handle,
+    today: r.today,
+    ledger: r.entry,
+    note: '已关注，并记进台账（同一个人不会关注第二次）',
+  }
+}
+
+/** 回复：{id, text, confirm?} —— 语感 / 长度 / 链接 / bigram 四道都在内容闸门里 */
+async function toolReply(args) {
+  const a = args || {}
+  const id = clean(a.id).replace(/^#/, '') || idFromUrl(a.url)
+  if (!id) return inputBlock('需要推文 id 或完整链接（https://x.com/<handle>/status/<id>）', { action: 'reply' })
+  if (!/^\d{5,25}$/.test(id)) return inputBlock('推文 id 不合法（应该是 5-25 位数字）', { action: 'reply', id })
+  const text = String(a.text ?? '')
+  if (!text.trim()) return inputBlock('回复正文是空的', { action: 'reply', id })
+  const r = await runGated('reply', { target: id, text, confirm: a.confirm }, () => replyTweet(id, text))
+  if (!r.ok) return gateFail('reply', id, r)
+  const d = writeData(r.result)
+  const newId = String(d.id || '')
+  return {
+    ok: true,
+    action: 'reply',
+    id: newId,
+    replyTo: id,
+    url: String(d.url || ('https://x.com/i/status/' + newId)),
+    today: r.today,
+    ledger: r.entry,
+    note: '回复已发出，并记进台账（正文只存前 40 字）',
+  }
+}
+
+/** 发帖：{text, confirm?, replyTo?} —— 带 replyTo 就是引用转推（CLI 的 quote） */
+async function toolPost(args) {
+  const a = args || {}
+  const text = String(a.text ?? '')
+  if (!text.trim()) return inputBlock('正文是空的', { action: 'post' })
+  const replyTo = clean(a.replyTo || a.quoteId || '').replace(/^#/, '')
+  if (replyTo && !/^\d{5,25}$/.test(replyTo)) {
+    return inputBlock('replyTo（要引用的推文 id）不合法：应该是 5-25 位数字', { action: 'post', replyTo })
+  }
+  const r = await runGated('post', { target: replyTo, text, confirm: a.confirm }, () => (
+    replyTo ? quoteTweet(replyTo, text) : postTweet(text)
+  ))
+  if (!r.ok) return gateFail('post', replyTo, r)
+  const d = writeData(r.result)
+  const newId = String(d.id || '')
+  const out = {
+    ok: true,
+    action: replyTo ? 'quote' : 'post',
+    id: newId,
+    url: String(d.url || ('https://x.com/i/status/' + newId)),
+    today: r.today,
+    ledger: r.entry,
+    note: '已发布，并记进台账（正文只存前 40 字）',
+  }
+  if (replyTo) out.quotedId = replyTo
+  return out
+}
+
+/** 写开关与今日用量：四个开关 + 今日已用/上限 + 台账最后 5 条 */
+function toolWriteStatus() {
+  return writeSummary()
+}
+
 /* ────────────────────────────── 工具清单（名字/参数 = CONTRACT 第 1 节） ────────────────────────────── */
 
 const TOOLS = [
@@ -326,6 +488,72 @@ const TOOLS = [
     description: '账号涨粉与曝光现算：粉丝 / 关注 / 推文数 / 蓝标 / 近 10 条平均与最高曝光 / 关注者蓝标比例（抽样）。',
     inputSchema: { type: 'object', properties: {} },
     run: () => toolGrowth(),
+  },
+  {
+    name: 'x_like',
+    description: '给一条推文点赞。⚠️ 写操作：要求 config 里 allowWrite + allowLike 都打开，且今天没超 maxLikesPerDay；'
+      + '同一条不会点第二次（台账去重）。被闸住时返回 {ok:false, blocked, reason}。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '推文 id（数字串）' },
+        confirm: { type: 'boolean', description: '点赞不要求 confirm（只有回复/发帖默认要求）' },
+      },
+      required: ['id'],
+    },
+    run: (a) => toolLike(a),
+  },
+  {
+    name: 'x_follow',
+    description: '关注一个账号。⚠️ 写操作：要求 allowWrite + allowFollow，且今天没超 maxFollowsPerDay；'
+      + '已关注过的人会被去重闸门拦下。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: '账号名（不带 @）' },
+        confirm: { type: 'boolean', description: '关注不要求 confirm' },
+      },
+      required: ['handle'],
+    },
+    run: (a) => toolFollow(a),
+  },
+  {
+    name: 'x_reply',
+    description: '回复一条推文。⚠️ 写操作：要求 allowWrite + allowReply（默认还要求 confirm:true）、当日额度未满；'
+      + '正文要过内容闸门：开头八股（说得好/学习了/支持…）、纯表情、太短、带链接（replyAllowLinks 关时）、'
+      + '和自己最近 20 条回复太像（bigram>0.8）都会被拒。同一条只回一次。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要回复的推文 id' },
+        text: { type: 'string', description: '回复正文（必须带具体信息：数字 / 反例 / 可执行动作）' },
+        confirm: { type: 'boolean', description: 'replyRequireConfirm=true 时必须显式 true' },
+      },
+      required: ['id', 'text'],
+    },
+    run: (a) => toolReply(a),
+  },
+  {
+    name: 'x_post',
+    description: '发一条推文（带 replyTo 就是引用转推）。⚠️ 写操作：要求 allowWrite + allowPost（默认还要求 confirm:true）；'
+      + '正文 ≤280 加权字符（URL 算 23、中文算 2）。返回 tweet id / url。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '正文（≤280 加权字符）' },
+        confirm: { type: 'boolean', description: 'postRequireConfirm=true 时必须显式 true' },
+        replyTo: { type: 'string', description: '要引用的推文 id（给了就走引用转推）' },
+      },
+      required: ['text'],
+    },
+    run: (a) => toolPost(a),
+  },
+  {
+    name: 'x_write_status',
+    description: '写开关与今日用量：四个开关 + 今日已用/上限 + 台账最后 5 条（不含正文全文）。'
+      + '动手之前先看这个，别硬试。',
+    inputSchema: { type: 'object', properties: {} },
+    run: () => toolWriteStatus(),
   },
 ]
 
