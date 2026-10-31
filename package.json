@@ -1,0 +1,55 @@
+{
+  "name": "dsh-x-scroll",
+  "version": "0.1.0",
+  "description": "DSH 插件：每天替你刷一轮 X（Twitter）—— 按方向读帖、写出热点与可回帖清单、附账号涨粉数据",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "lib",
+    "server",
+    "prompts",
+    "selfcheck.mjs",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.1.7-rc.1",
+    "node": ">=22"
+  },
+  "dependencies": {
+    "nodemailer": "^10.1.7"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Elohia/dsh-x-scroll.git"
+  },
+  "homepage": "https://github.com/Elohia/dsh-x-scroll#readme",
+  "bugs": {
+    "url": "https://github.com/Elohia/dsh-x-scroll/issues"
+  },
+  "license": "MIT",
+  "author": "Elohia"
+}
