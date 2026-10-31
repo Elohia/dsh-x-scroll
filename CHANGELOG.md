@@ -3,6 +3,44 @@
 > 版本号跟 `package.json` 的 `version`。配置字段只加不改：老 `config.json` 不需要迁移，缺的字段走默认值。
 > 写操作相关能力**默认全关**，升级本身不会让插件开始写。
 
+## 0.2.1 — 2026-10-31
+
+### 新增：依赖自检与一键安装
+
+- 新增 `lib/deps.mjs`：逐项体检 Node.js ≥ 22 / twitter-cli / nodemailer / 插件家目录可写 / 插件文件完整，
+  每项返回 `{ok, detail, fix, cmd}`（为什么 + 怎么修 + 可抄的命令）。
+- 一键安装：缺 nodemailer → 插件目录 `npm install --omit=dev`（失败回退 `pnpm add nodemailer`）；
+  缺 twitter-cli → `pipx install twitter-cli`（没有 pipx 就给准确的 `pip install --user twitter-cli`）。
+  幂等：已满足的项跳过，重复点不会重复装。
+- 安装边界：**只装依赖**（npm / pnpm / pipx），不调用 twitter-cli 业务命令、不碰账号；
+  全程写 `$DSH_HOME/x-duty/install.log`（家目录不可写时退到插件目录），设置页能看输出尾部。
+- 新增宿主工具 `x_setup`（`check` / `install` 两种模式）、路由 `GET /api/x-duty/deps` 与
+  `POST /api/x-duty/install`；设置页新增「依赖自检 / 一键安装」区块（逐项状态 + 按钮 + 安装输出）。
+
+### selfcheck 升级
+
+- 新增「④ 依赖」段：node / twitter-cli / nodemailer / 家目录，缺项附修复命令。
+- 退出码语义统一：**必须依赖缺 → 2**；**nodemailer 缺只提示**（只影响邮件通道，不算失败）。
+- JSON 增加 `checks.deps`（逐项 `{ok, detail, fix, cmd}`）。
+
+### 语言风格：推荐自己的 skill，插件不内置
+
+- README / AGENTS / duty 都写明：回复/发帖的"像你本人"由使用者自己的写作 skill 提供，
+  推荐装 **`elohia-double`**（数字分身，学本人语气、写像本人的回复）。
+- 插件**不内置、不合并、不读取**它的任何语料；插件只提供闸门（长度 / 语感 / 链接 / 额度 / 确认）与台账，
+  **不复制人格**。没挂这类 skill 也能用，用中性克制的表达即可。
+
+### 兼容性
+
+- 配置字段无变化（0.2.0 的写操作配置照旧）；升级不会改变任何开关默认值。
+- 一键安装是可选路径：不点也能按 README 的命令手动装。
+
+### 已知限制
+
+- 一键安装不装 Node/Python 本体，也不配代理/凭据（这两个要自己填）。
+- 机器上没有 pipx 时，twitter-cli 只能给 `pip install --user twitter-cli`，需要手动跑一次。
+- 语气学习不在插件内：插件不会读取、复制或缓存任何 skill 的语料。
+
 ## 0.2.0 — 2026-10-31
 
 ### 新增：写操作（点赞 / 关注 / 回复 / 发帖）

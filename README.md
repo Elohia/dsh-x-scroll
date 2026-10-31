@@ -62,8 +62,9 @@ cd <本仓库绝对路径>
 node selfcheck.mjs
 ```
 
-零依赖，查三样东西并给三段人看的输出：① twitter 二进制 / CLI 版本 / 代理端口（顺带一行「**写操作：全关 / 已开 N 项**」）
-② 凭据有没有（不显示值）③ 真跑一次 `twitter status --json` 看账号。**退出码 0 = 全通；2 = 有缺**。要机器读就加 `--json`。
+零依赖，查四段并给人看的输出：① 环境（twitter 二进制 / CLI 版本 / 代理端口，顺带一行「**写操作：全关 / 已开 N 项**」）
+② 凭据有没有（不显示值）③ 连通（真跑一次 `twitter status --json` 看账号）④ 依赖（node / twitter-cli / nodemailer / 家目录，缺项给修复命令）。
+**退出码 0 = 全通；2 = 有必须项缺**（nodemailer 缺只提示，不算失败）。要机器读就加 `--json`。
 
 > 设置页里那块「环境自检」是插件内部版本（走 `x_status` / `x_whoami`，顺带起 MCP），
 > 命令行这个 `selfcheck.mjs` 是独立零依赖版：DSH 没起来、插件没装好时也能先查环境。
@@ -90,6 +91,54 @@ setx TWITTER_CT0 "<ct0 的值>"
 cd <本仓库绝对路径>
 npm install --omit=dev
 ```
+
+## 依赖与一键安装
+
+不用背命令：设置页里有「**依赖自检 / 一键安装**」区块，逐项显示缺什么，点一下装（全程写 `install.log`）。
+
+### 依赖清单
+
+| 依赖 | 必须？ | 说明 | 缺了怎么办 |
+|---|---|---|---|
+| Node.js ≥ 22 | 必须 | 插件和内置 MCP 都跑在 Node 上 | 升级 Node（nodejs.org，或 `winget upgrade OpenJS.NodeJS.LTS`） |
+| twitter-cli 0.8.5 | 必须 | 所有读写都经它；只认 0.8.x 实测字段 | `pipx install twitter-cli`；没有 pipx 就 `python -m pip install --user twitter-cli` |
+| 代理 | 必须 | 连不上 X 就没有数据（默认探测 7890） | 开代理软件，或设置页填 `proxy`；墙外可填 `direct` |
+| 凭据 | 必须 | `TWITTER_AUTH_TOKEN` / `TWITTER_CT0`（只注入子进程） | 按上面 D 节写用户环境变量 |
+| nodemailer | 可选 | 只有邮件投递要它；不装不影响日报/会话投递 | 插件目录 `npm install --omit=dev`（或设置页一键装） |
+| 插件家目录可写 | 必须 | 报告/日志/台账都写在 `$DSH_HOME/x-duty/` | 换可写目录（`DSH_HOME` / `X_DUTY_HOME`） |
+| 插件文件完整 | 必须 | 缺文件 = 包不完整 | 重新安装插件 |
+
+### 设置页一键安装
+
+- 设置 → **刷 X** → 「**依赖自检 / 一键安装**」：逐项状态（Node / twitter-cli / nodemailer / 家目录 / 插件文件），缺项旁边有修复命令。
+- 点「**一键安装缺失依赖**」：**只装依赖**（npm / pnpm / pipx），不调用 twitter-cli 业务命令、不碰账号。
+  - 缺 nodemailer → 插件目录 `npm install --omit=dev`；失败回退 `pnpm add nodemailer`。
+  - 缺 twitter-cli → `pipx install twitter-cli`；没有 pipx 就显示准确的 `pip install --user twitter-cli`（这条要你自己跑）。
+  - 装完自动重新体检；输出写进 `$DSH_HOME/x-duty/install.log`（家目录不可写时退到插件目录）。
+- 也可以让会话里的 AI 调 `x_setup`（`check` / `install` 两种模式），和自己点按钮等价。
+
+### 等价命令（不想点页面时）
+
+```powershell
+cd <本仓库绝对路径>
+node selfcheck.mjs                 # 看「④ 依赖」段；缺项会给修复命令
+npm install --omit=dev             # 只装 nodemailer（邮件通道）
+pipx install twitter-cli           # 没有 pipx：python -m pip install --user twitter-cli
+```
+
+`selfcheck.mjs` 退出码：**必须依赖缺 → 2**（Node 太旧 / twitter-cli 缺或太老 / 家目录不可写；环境或凭据问题也计入）；
+**nodemailer 缺只提示、不算失败**（邮件通道不可用，其它照常）。要机器读加 `--json`，`checks.deps` 里逐项给 `{ok, detail, fix, cmd}`。
+
+### 一键安装失败排查
+
+| 症状 | 原因 / 怎么办 |
+|---|---|
+| npm 报代理 / 网络 | npm 走系统代理：设 `HTTPS_PROXY`（或 npm 的 proxy）后重试；也可先手动 `npm install --omit=dev` |
+| npm EACCES / 只读目录 | 插件目录不可写：换一个可写位置重新安装，别在只读目录里装 |
+| `pnpm` 不存在 | 一键装会自动回退；两条都失败就手动 `npm install --omit=dev` |
+| 没有 pipx | 页面会给 `pip install --user twitter-cli`；装完确认 `twitter --version` |
+| 装完 twitter 仍找不到 | 新开终端 / 重启 DSH（PATH 缓存）；或在设置页填 `twitterBin` 绝对路径 |
+| 平台限制 | 一键安装只装依赖，不装 Node/Python 本身、不配代理/凭据（那两个自己填） |
 
 ## 设置页字段
 
@@ -209,6 +258,15 @@ npm install --omit=dev
 3. 回复保持 confirm、额度 5/天；发帖只在有实测回执的那天临时打开。
 4. 任何时候觉得不对：**关总闸**。一个开关就停手。
 
+## 语言风格：用你自己的 skill（推荐 elohia-double）
+
+回复 / 发帖要"像你本人"，靠的是**你自己的写作 skill**，不是这个插件：
+
+- 推荐在 DSH 的 skill 里装 / 启用 **`elohia-double`**（数字分身：学本人语气、写像本人的回复、回忆经历、检查文字像不像本人）。
+- 本插件**不内置、不合并、不读取** elohia-double 的任何语料；它只提供闸门（长度 / 语感 / 链接 / 额度 / 确认）与台账，**不复制人格**。
+- 没挂这类 skill 也能用：用中性、克制的表达；不要假装特定人设，不要编造"本人经历 / 本人数据"。
+- 语气再像也不豁免红线：不编数字、不刷量、不批量回复。
+
 ## 工具（会话里的 AI 可以直接用）
 
 | 工具 | 干什么 |
@@ -229,6 +287,7 @@ npm install --omit=dev
 | `x_reply` | **写**：回复一条（要总闸 + `allowReply`；再过 confirm / 长度 / 语感 / 链接 / 额度 / 去重） |
 | `x_post` | **写**：发帖或引用转推（要总闸 + `allowPost`；confirm、≤280 加权、额度） |
 | `x_write_status` | 写操作总览：总闸 + 四个单项开关 + 今日已用/上限 + 台账最后 5 条 |
+| `x_setup` | 依赖体检 / 一键安装：`check` 看五项；`install` 只装 npm/pnpm/pipx 依赖并写 `install.log` |
 
 - **读工具**（`x_status` / `x_whoami` / `x_search` / `x_user` / `x_posts` / `x_tweet` / `x_growth`）只读。
 - **写工具**（`x_like` / `x_follow` / `x_reply` / `x_post`）**默认一律拒绝**：总闸/单项开关没开、没带 `confirm:true`、超额度、重复、内容不合格，任一不过就返回 `{ok:false, blocked, reason}`，不会执行。
@@ -338,6 +397,7 @@ $DSH_HOME/x-duty/
 ├── seen.md              判重表
 ├── headless-overlay.yml 跑一轮时临时生成的 overlay（有才出现）
 ├── duty.log             跑一轮的日志
+├── install.log          依赖安装日志（点「一键安装」才有）
 ├── write-ledger.jsonl   写操作台账（只追加；有动手才有）
 ├── write-seen.json      写操作去重（赞过/关注过/回过/发过；有动手才有）
 ├── risk.json            触发限流后的冷却记录（有才出现）
@@ -351,7 +411,10 @@ $DSH_HOME/x-duty/
 
 | 症状 | 原因 / 怎么办 |
 |---|---|
-| `node selfcheck.mjs` 报「twitter 没找到」 | 设 `X_TWITTER_BIN`，或在设置页填 `twitterBin`，或把 twitter 放进 PATH |
+| `node selfcheck.mjs` 报「twitter 没找到」 | 设 `X_TWITTER_BIN`，或在设置页填 `twitterBin`，或把 twitter 放进 PATH；也可在设置页「依赖自检」点一键安装 |
+| 自检「④ 依赖」有 ✗（或缺 nodemailer 的 •） | 按缺项旁边的修复命令；或在设置页「依赖自检 / 一键安装」直接装 |
+| 一键安装失败 | 看 `install.log` 尾部（npm/pnpm/pipx 的原始输出都在）；再对照上面「一键安装失败排查」 |
+| 缺 nodemailer | 只影响邮件投递：设置页一键装，或 `npm install --omit=dev`；不装也能用 |
 | 自检报「没有可用代理」 | 开代理软件让 7890 通；或设 `X_PROXY`；或设置页填 `proxy`。7892 是回退，可能已死。机器本来就在墙外就填 `direct` |
 | 自检报「凭据没有」 | 按上面 D 节写 `TWITTER_AUTH_TOKEN` / `TWITTER_CT0`，新开终端/重启 DSH |
 | 认证 401 / 403 | Cookie 失效或轮换了，重新从浏览器取两个值 |

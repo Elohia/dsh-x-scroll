@@ -25,6 +25,7 @@
 | "改个设置 / 换方向 / 换代理" | `x_config`（字段见 README 设置表） |
 | "看看写操作能不能动手 / 今天做了几次" | `x_write_status`（开关 + 今日已用/上限 + 台账最后 5 条） |
 | "把这条点个赞 / 关注他 / 回复这句 / 发这条" | `x_like` / `x_follow` / `x_reply` / `x_post`（**先看下面「写操作」节**） |
+| "缺依赖 / 装不上 / 能不能一键装" | `x_setup`（`check` / `install`）；或 `node selfcheck.mjs` 看「④ 依赖」 |
 
 ## 日报在哪
 
@@ -38,7 +39,7 @@
 1. 侧栏 **插件 → 添加插件**，填本仓库**绝对路径**，安装。
    桌面版 profile 由 Electron 独占：`dsh plugin --profile desktop add ...` 会被拒（`profile "desktop" is managed exclusively by the Electron application`）。命令行 profile 才用 `dsh plugin --profile <name> add "link:<路径>"`。
 2. **重启 DSH**（bundle 层重启才组装）。
-3. `cd <仓库> && node selfcheck.mjs` —— 三段全 ✓ 再继续（找二进制/代理的顺序和插件一致；`--json` 给机器）；看不懂哪段就照 README「排错」对。
+3. `cd <仓库> && node selfcheck.mjs` —— 四段（环境/凭据/连通/依赖）全 ✓ 再继续（`--json` 给机器）；缺依赖就在设置页「依赖自检 / 一键安装」点一下，或看「④ 依赖」给的命令。
 4. 设置 → **刷 X** → 等「**环境自检**」跑完（点「**重新自检**」可重跑）→「现在跑一轮」；进度看 `duty.log`。
 5. 要邮件才 `npm install --omit=dev`（只装 nodemailer；不装不影响别的通道）。
 
@@ -59,6 +60,8 @@
   2. 日报「本轮动手」记一行；台账由插件写，**你不要手写**。
 - **绝不**：批量自动回复/关注/点赞、互赞互关、自动回关、私信（无能力）、替用户决定"发/不发"。
 - **用户喊停**：关总闸 `allowWrite`（`x_config` 或设置页），不是只关某个单项。
+- **语气**：回复/发帖的"像你本人"由用户自己的写作 skill 提供（推荐 `elohia-double` 数字分身）。
+  插件**不内置、不合并、不读取**它的语料，只提供闸门与台账；**不要**把人格/语料复制进插件、日报或配置。
 
 ## 硬约束（都是实测撞出来的，别改回去）
 
@@ -83,16 +86,20 @@
 - **链接只能来自本轮工具返回**：用工具给的 `url`，或由 `id` 拼 `https://x.com/i/status/<id>`；别拿 handle 猜。
 - **章程升级走记账制**（`charter.sha256`）：用户改过 `duty.md` 就一个字不动，新版另存 `duty.md.new`。
 - **家目录不写插件目录**：配置/报告/日志全在 `$DSH_HOME/x-duty/`；装进 node_modules 后包目录可能只读、升级会被覆盖。
+- **依赖安装只装依赖**：`x_setup install` / 设置页「一键安装缺失依赖」只跑 npm / pnpm / pipx（缺 nodemailer、twitter-cli），
+  **不**调用 twitter-cli 业务命令、**不**碰账号；日志写 `$DSH_HOME/x-duty/install.log`。装 Node/Python 本体、配代理/凭据都不是一键安装的事。
+- **语言风格不内置**：`elohia-double` 是用户自己的 skill，插件不内置、不合并、不读取其语料；别替用户复制人格或语料进来。
 - **定时器 / 子进程回调里绝不让异常外冒**：未捕获异常会杀掉整个 DSH 宿主。
 
 ## 这个仓库现在有什么
 
-- `index.js` —— host 半端：`x_*` 工具注册 + 每天定时器 + `/api/x-duty/*` + 配置 + 起一轮 + 镜像 + 投递；写操作在宿主侧先过一遍开关（fail-closed）
-- `client.js` —— 设置页（侧栏「刷 X」），含「写操作」区块（总闸/四项开关/确认/额度/回复闸门）
+- `index.js` —— host 半端：`x_*` 工具注册 + `x_setup` + 每天定时器 + `/api/x-duty/*`（含 `/deps`、`/install`）+ 配置 + 起一轮 + 镜像 + 投递；写操作在宿主侧先过一遍开关（fail-closed）
+- `client.js` —— 设置页（侧栏「刷 X」），含「写操作」区块（总闸/四项开关/确认/额度/回复闸门）与「依赖自检 / 一键安装」区块
 - `server/mcp_server.mjs` —— 内置 MCP（stdio JSON-RPC）：把 `x_*` 转发给 twitter-cli；写工具的闸门/额度/台账在这一层
-- `lib/` —— `xcli.mjs`（twitter-cli 封装：定位二进制、注入凭据、代理探测、读/写子命令）/ `state.mjs`（家目录、章程升级、日期）/ `mcp.mjs`（stdio JSON-RPC 客户端）/ `hostdeps.mjs`（从宿主树取 `defineTool`）/ `deliver.mjs`（会话投递 + 邮件 + 通知 + 摘要抽取）
+- `lib/` —— `xcli.mjs`（twitter-cli 封装：定位二进制、注入凭据、代理探测、读/写子命令）/ `writegate.mjs`（写操作 8 道闸 + 台账/去重）/ `deps.mjs`（依赖体检 + 一键安装）/ `state.mjs`（家目录、章程升级、日期）/ `mcp.mjs`（stdio JSON-RPC 客户端）/ `hostdeps.mjs`（从宿主树取 `defineTool`）/ `deliver.mjs`（会话投递 + 邮件 + 通知 + 摘要抽取）
 - `prompts/duty.md` —— 一轮要做的事 + 五节日报格式 + 写操作节（用户可改）
-- `selfcheck.mjs` —— 零依赖环境自检（二进制 / 版本 / 代理 / 凭据 / whoami / 写操作开关；退出码 0 或 2）
+- `selfcheck.mjs` —— 零依赖环境自检（环境 / 凭据 / 连通 / 依赖四段；含写操作开关；退出码 0 或 2）
+- `CHANGELOG.md` —— 版本变更（0.2.0 写操作、0.2.1 依赖与一键安装）
 - `CHANGELOG.md` —— 版本变更（0.2.0 起有写操作）
 
 ## 已知残留（改造中，别按旧注释猜）

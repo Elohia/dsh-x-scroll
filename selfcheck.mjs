@@ -6,12 +6,14 @@
  *   ① 环境：twitter 二进制在哪、CLI 版本、代理端口通不通、写操作开关状态
  *   ② 凭据：TWITTER_AUTH_TOKEN / TWITTER_CT0 有没有（**只报有无，不显示值**）
  *   ③ 连通：真跑一次 `twitter status --json`，看账号能不能读出来
- *
+ *   ④ 依赖：node / twitter-cli / nodemailer（可选）/ 家目录可写；缺项给修复命令
+ *      （必须依赖缺 ⇒ 退出码 2；nodemailer 只影响邮件通道，缺了只提示）
+
  * 写操作（CONTRACT v0.2）只**报状态**、不改变退出码：总闸关着就是只读；开着也只说明"允许"，
  * 真正能不能动手还要过 MCP 的额度 / 确认 / 去重 / 内容闸门。
  *
  * 用法：
- *   node selfcheck.mjs           人看的三段输出
+ *   node selfcheck.mjs           人看的分段输出（环境 / 凭据 / 连通 / 依赖）
  *   node selfcheck.mjs --json    机器吃（stdout 一段 JSON，日志全走 stderr）
  *
  * 退出码：0 = 三段全通过；2 = 有缺（缺什么看 ✗ 那几行）。
@@ -23,13 +25,17 @@
  * ============================================================================
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import net from 'node:net'
 
 const WANT_VERSION = '0.8.5' // 实测可用的 twitter-cli 版本
 const MIN_VERSION = [0, 8, 0]
+const NODE_MIN_MAJOR = 22
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const PROBE_CANDIDATES = ['http://127.0.0.1:7890', 'http://127.0.0.1:7892']
 const IS_WIN = platform() === 'win32'
 const AS_JSON = process.argv.includes('--json')
@@ -335,6 +341,69 @@ function childEnv({ token, ct0, proxy, direct }) {
   return env
 }
 
+/* ───────────────────────── ④ 依赖检查（缺项给修复命令） ───────────────────────── */
+
+function depNode() {
+  const major = Number(process.versions.node.split('.')[0])
+  return {
+    ok: major >= NODE_MIN_MAJOR,
+    detail: 'v' + process.versions.node + (major >= NODE_MIN_MAJOR ? '' : `（需要 ≥ ${NODE_MIN_MAJOR}）`),
+    fix: '升级 Node 到 22 或更新（nodejs.org 安装包，或 winget upgrade OpenJS.NodeJS.LTS）',
+    cmd: 'winget upgrade OpenJS.NodeJS.LTS',
+  }
+}
+
+function depTwitter(bin, version) {
+  if (!bin.bin) {
+    return {
+      ok: false,
+      detail: '未找到可执行文件',
+      fix: '装 twitter-cli（有 pipx 用 pipx；没有就 pip --user）',
+      cmd: 'pipx install twitter-cli    # 没有 pipx 时：python -m pip install --user twitter-cli',
+    }
+  }
+  if (!version.ok) {
+    return {
+      ok: false,
+      detail: `${bin.bin}（版本 ${version.text || '读不到'}，需要 ≥ ${MIN_VERSION.join('.')}）`,
+      fix: '升级 twitter-cli',
+      cmd: 'pipx upgrade twitter-cli',
+    }
+  }
+  return { ok: true, detail: `${version.text}（${bin.bin}）`, fix: '', cmd: '' }
+}
+
+function depNodemailer() {
+  try {
+    const req = createRequire(join(PLUGIN_DIR, 'package.json'))
+    req.resolve('nodemailer')
+    return { ok: true, optional: true, detail: '已安装（邮件通道可用）', fix: '', cmd: '' }
+  } catch {
+    return {
+      ok: false,
+      optional: true,
+      detail: '未安装（只影响邮件投递，不影响日报与投递到会话）',
+      fix: '在插件目录装运行依赖；npm 装不上再 pnpm add nodemailer',
+      cmd: `cd "${PLUGIN_DIR}" && npm install --omit=dev`,
+    }
+  }
+}
+
+function depHome() {
+  try {
+    mkdirSync(dutyHome, { recursive: true })
+    accessSync(dutyHome, fsConstants.W_OK)
+    return { ok: true, detail: dutyHome, fix: '', cmd: '' }
+  } catch (e) {
+    return {
+      ok: false,
+      detail: `${dutyHome}（${e?.code || e?.message || '不可写'}）`,
+      fix: '检查目录权限，或把 DSH_HOME / X_DUTY_HOME 指到可写目录',
+      cmd: 'set X_DUTY_HOME=<可写目录>    # PowerShell: $env:X_DUTY_HOME=\'<可写目录>\'',
+    }
+  }
+}
+
 /* ───────────────────────── 写操作开关状态（只报，不判失败） ───────────────────────── */
 
 const WRITE_SWITCHES = [
@@ -452,6 +521,16 @@ async function main() {
   }
   if (!account.ok && !account.skipped) failures.push('连通')
 
+  // ④ 依赖（node / twitter-cli / nodemailer / 家目录）
+  const deps = {
+    node: depNode(),
+    twitter: depTwitter(bin, version),
+    nodemailer: depNodemailer(),
+    home: depHome(),
+  }
+  if (!deps.node.ok) failures.push('Node 版本')
+  if (!deps.home.ok) failures.push('家目录不可写')
+
   const credView = {
     token: { present: token.present, source: token.source },
     ct0: { present: ct0.present, source: ct0.source },
@@ -461,6 +540,7 @@ async function main() {
   checks.proxy = { ok: Boolean(proxy.url) || Boolean(proxy.direct), direct: Boolean(proxy.direct), url: proxy.url, source: proxy.source, error: proxy.error || '', candidates: proxy.candidates.map((c) => ({ url: c.url, source: c.source, strict: Boolean(c.strict), ok: c.ok, ms: c.ms, error: c.error })) }
   checks.credentials = credView
   checks.account = account
+  checks.deps = deps
   checks.write = write
   checks.dutyHome = dutyHome
   checks.configFound = Boolean(readJson(configPath))
@@ -527,10 +607,24 @@ async function main() {
   }
   line()
 
+  line('④ 依赖')
+  line(`  ${mark(deps.node.ok)} node          ${deps.node.detail}`)
+  line(`  ${mark(deps.twitter.ok)} twitter-cli   ${deps.twitter.detail}`)
+  line(`  ${deps.nodemailer.ok ? '✓' : '•'} nodemailer    ${deps.nodemailer.detail}`)
+  line(`  ${mark(deps.home.ok)} 家目录        ${deps.home.detail}`)
+  for (const [name, d] of [['node', deps.node], ['twitter-cli', deps.twitter], ['nodemailer', deps.nodemailer], ['家目录', deps.home]]) {
+    if (d.ok) continue
+    const head = d.optional ? '可选修复' : '修复'
+    line(`             ${head}（${name}）：${d.fix}`)
+    if (d.cmd) line(`             命令：${d.cmd}`)
+  }
+  if (!deps.nodemailer.ok) line('             （nodemailer 只影响邮件通道：缺了它日报/会话投递照常）')
+  line()
+
   if (ok) {
-    line('结论：三段全通过 —— 可以跑一轮了（设置页点「现在跑一轮」，或让 AI 调 x_run）。')
+    line('结论：全部通过（环境 / 凭据 / 连通 / 依赖）—— 可以跑一轮了（设置页点「现在跑一轮」，或让 AI 调 x_run）。')
   } else {
-    line(`结论：未通过 —— 缺 ${failures.join(' / ')}。先修 ✗ 那几行；装/排查步骤见 README「排错」。`)
+    line(`结论：未通过 —— 缺 ${failures.join(' / ')}。先修 ✗ 那几行；装/排查步骤见 README「依赖与一键安装」与「排错」。`)
   }
   line(`退出码：${ok ? 0 : 2}`)
   process.stdout.write(L.join('\n') + '\n')

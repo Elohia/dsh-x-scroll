@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { McpClient } from './lib/mcp.mjs'
 import { stateDirOf, readJson, writeJson, ensureCharter, charterPath, minutesOf, dayKey, monthKey } from './lib/state.mjs'
 import { deliverToSession, sendMail, markdownToHtml, toastNotify, defaultSessionsRoot, readIf } from './lib/deliver.mjs'
+import { checkDeps, installDeps, readInstallLog } from './lib/deps.mjs'
 
 export const name = 'x-scroll'
 export const inject = ['webServer', 'tools']
@@ -571,6 +572,22 @@ export function apply(ctx, config) {
     return String(sc?.error || 'X 环境不可用').split(/\r?\n/)[0].slice(0, 300)
   }
 
+  /* ─────────────── 依赖自检 / 安装 ─────────────── */
+
+  const depOptions = () => {
+    refreshCfg()
+    return { pluginDir, home: stateDir, twitterBin: String(cfg.twitterBin || '').trim() }
+  }
+
+  let installingDeps = false
+  const doInstallDeps = async () => {
+    if (installingDeps) return { ok: false, busy: true, error: '已经有一个安装在跑，等它结束' }
+    installingDeps = true
+    try { return await installDeps(depOptions(), log) }
+    catch (e) { return { ok: false, error: String(e?.message ?? e) } }
+    finally { installingDeps = false }
+  }
+
   /* ─────────────── 工具 ─────────────── */
 
   const textOutput = {
@@ -865,6 +882,19 @@ export function apply(ctx, config) {
         refreshCfg()
         return { ok: false, error: String(e?.message ?? e), write: localWriteView() }
       }
+    },
+  })
+
+  tool({
+    name: 'x_setup',
+    description: '依赖自检 / 一键安装。\n'
+      + 'mode=check（默认）：逐项看 Node、twitter-cli、nodemailer、家目录可写、插件文件完整，每项给 {ok, detail, fix, cmd}。\n'
+      + 'mode=install：装缺的依赖（幂等、写 install.log；只跑 npm/pnpm/pipx，**不碰 X 账号**）。',
+    parameters: { mode: { type: 'string', description: 'check | install（默认 check）' } },
+    async execute(args) {
+      const mode = String(args?.mode || 'check').toLowerCase() === 'install' ? 'install' : 'check'
+      if (mode === 'install') return doInstallDeps()
+      return checkDeps(depOptions())
     },
   })
 
@@ -1388,6 +1418,24 @@ export function apply(ctx, config) {
       } catch (e) {
         return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) })
       }
+    }
+
+    // ── 依赖自检 / 安装（不碰 X 账号）──
+    if (req.method === 'GET' && path === '/api/x-duty/deps') {
+      try {
+        const r = await checkDeps(depOptions())
+        const logs = readInstallLog(stateDir)
+        return sendJson(res, 200, { ...r, installLog: logs.file, installLogText: logs.text })
+      } catch (e) { return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) }) }
+    }
+
+    if (req.method === 'POST' && path === '/api/x-duty/install') {
+      try {
+        const body = await readBody(req)
+        if (body && body.what && body.what !== 'deps') return sendJson(res, 200, { ok: false, error: '只做依赖安装（what=deps）' })
+        const r = await doInstallDeps()
+        return sendJson(res, 200, r)
+      } catch (e) { return sendJson(res, 200, { ok: false, error: String(e?.message ?? e) }) }
     }
 
     return sendJson(res, 404, { ok: false, error: 'unknown ' + req.method + ' ' + path })

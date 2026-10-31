@@ -80,6 +80,7 @@ window.__ModuleLoader__.load({
       '  background:var(--dsw-alias-bg-overlay,rgba(128,128,128,.14));color:var(--dsw-alias-label-secondary,#c9ccd1);}',
       '[data-x-badge][data-on]{background:rgba(59,130,246,.18);color:#60a5fa;}',
       '[data-x-badge][data-good]{background:rgba(34,197,94,.16);color:#4ade80;}',
+      '[data-x-badge][data-bad]{background:rgba(239,68,68,.16);color:#f87171;}',
       '[data-x-sub]{display:flex;flex-direction:column;gap:10px;margin-left:4px;padding-left:12px;',
       '  border-left:2px solid var(--dsw-alias-border-l2,rgba(128,128,128,.22));}',
       '[data-x-toast]{position:fixed;right:22px;bottom:22px;z-index:60;max-width:340px;',
@@ -158,6 +159,13 @@ window.__ModuleLoader__.load({
       const [scBusy, setScBusy] = React.useState(false)
       const [scNote, setScNote] = React.useState('')
       const [scTone, setScTone] = React.useState('')
+
+      // 依赖自检 / 一键安装
+      const [deps, setDeps] = React.useState(null)
+      const [depsBusy, setDepsBusy] = React.useState('')
+      const [depsNote, setDepsNote] = React.useState('')
+      const [depsTone, setDepsTone] = React.useState('')
+      const [depsTail, setDepsTail] = React.useState('')
 
       const [runNote, setRunNote] = React.useState(null)
       const [report, setReport] = React.useState(null)
@@ -263,6 +271,44 @@ window.__ModuleLoader__.load({
         if (manual) setScBusy(false)
       }
       React.useEffect(() => { runSelfcheck(false); /* eslint-disable-next-line */ }, [])
+
+      /* 依赖自检 / 安装（只碰 npm/pnpm/pipx，不碰 X 账号） */
+      const runDepsCheck = async (manual) => {
+        if (manual) { setDepsBusy('check'); setDepsNote('正在检查依赖…'); setDepsTone('') }
+        try {
+          const d = await jget('/deps')
+          if (!alive.current) return
+          setDeps(d)
+          if (d.installLogText) setDepsTail(d.installLogText)
+          if (manual) {
+            setDepsNote(d.ok ? '依赖齐全' : ('还缺：' + (d.missing || []).join(' / ')))
+            setDepsTone(d.ok ? 'good' : 'warn')
+          }
+        } catch (e) {
+          if (alive.current) { setDepsNote('检查失败：' + String(e?.message || e)); setDepsTone('bad') }
+        }
+        if (manual) setDepsBusy('')
+      }
+      React.useEffect(() => { runDepsCheck(false); /* eslint-disable-next-line */ }, [])
+
+      const onDepsInstall = async () => {
+        setDepsBusy('install')
+        setDepsNote('正在安装（npm / pnpm / pipx，约 10-60 秒；只装依赖，不碰账号）…')
+        setDepsTone('')
+        try {
+          const d = await jpost('/install', { what: 'deps' })
+          if (!alive.current) return
+          if (d.checks) setDeps(d.checks)
+          if (d.tail) setDepsTail(d.tail)
+          const changed = (d.steps || []).filter((s) => !s.skipped).map((s) => s.id)
+          if (d.busy) { setDepsNote('已经在装了，等它结束'); setDepsTone('warn') }
+          else if (d.ok) { setDepsNote(changed.length ? ('装好了：' + changed.join(' / ')) : '依赖已齐全，无需安装'); setDepsTone('good') }
+          else { setDepsNote('装完仍有缺失：' + (((d.checks && d.checks.missing) || []).join(' / ') || d.error || '未知原因')); setDepsTone('bad') }
+        } catch (e) {
+          if (alive.current) { setDepsNote('安装失败：' + String(e?.message || e)); setDepsTone('bad') }
+        }
+        setDepsBusy('')
+      }
 
       const onRun = async () => {
         setBusy('run'); setRunNote(null)
@@ -719,6 +765,28 @@ window.__ModuleLoader__.load({
                 + (sc.account?.verified ? ' · 蓝V' : '')))) : null,
           st.guide ? h('div', { 'data-x-note': '', style: { color: '#fbbf24' } },
             '上一次自动跑被门禁拦下（' + st.guide.stage + '）：' + String(st.guide.error || '').slice(0, 120)) : null),
+
+        /* ── 依赖自检 / 一键安装 ── */
+        h('div', { 'data-x-sec': '' },
+          h('div', { 'data-x-h': '', 'data-dot': '🧩' }, '依赖自检 / 一键安装'),
+          h('div', { 'data-x-note': '' }, '检查 Node / twitter-cli / nodemailer / 家目录 / 插件文件。安装只跑 npm、pnpm、pipx —— 不会调用 twitter-cli，也不会碰账号。'),
+          h('div', { 'data-x-row': '' },
+            h('button', { 'data-x-btn': '', disabled: Boolean(depsBusy), onClick: () => runDepsCheck(true) }, depsBusy === 'check' ? '检查中…' : '重新检查'),
+            h('button', { 'data-x-btn': '', 'data-primary': '', disabled: Boolean(depsBusy), onClick: onDepsInstall }, depsBusy === 'install' ? '安装中…' : '一键安装缺失依赖'),
+            deps ? h('span', { 'data-x-badge': '', 'data-good': deps.ok ? '' : undefined, 'data-bad': deps.ok ? undefined : '' }, deps.ok ? '齐全' : ('缺 ' + (deps.missing || []).length + ' 项')) : null),
+          depsNote ? h('div', { 'data-x-msg': '',
+            'data-good': depsTone === 'good' ? '' : undefined,
+            'data-warn': depsTone === 'warn' ? '' : undefined,
+            'data-bad': depsTone === 'bad' ? '' : undefined }, depsNote) : null,
+          deps ? h('div', { 'data-x-sub': '' },
+            (deps.items || []).map((it) => h('div', { 'data-x-row': '', key: it.id },
+              h('span', { 'data-x-badge': '', 'data-good': it.ok ? '' : undefined, 'data-bad': it.ok ? undefined : '' }, it.ok ? 'OK' : '缺'),
+              h('div', { 'data-x-grow': '' },
+                h('div', { 'data-x-label': '' }, it.label),
+                h('div', { 'data-x-note': '' }, it.detail),
+                it.ok ? null : h('div', { 'data-x-note': '' }, '修复：' + it.fix + (it.cmd ? ' · 命令：' + it.cmd : '')))))) : null,
+          deps?.installLog ? h('div', { 'data-x-note': '' }, '安装日志：' + deps.installLog) : null,
+          depsTail ? h('pre', { 'data-x-pre': '' }, depsTail) : null),
 
         /* ── 高级 ── */
         h('div', { 'data-x-sec': '' },
