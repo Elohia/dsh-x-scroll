@@ -2,7 +2,6 @@
   "name": "dsh-x-scroll",
   "version": "0.1.0",
   "description": "DSH 插件：每天替你刷一轮 X（Twitter）—— 按方向读帖、写出热点与可回帖清单、附账号涨粉数据",
-  "private": true,
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -51,5 +50,19 @@
     "url": "https://github.com/Elohia/dsh-x-scroll/issues"
   },
   "license": "MIT",
-  "author": "Elohia"
+  "author": "Elohia",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "twitter",
+    "x",
+    "mcp",
+    "duty",
+    "digest"
+  ]
 }
