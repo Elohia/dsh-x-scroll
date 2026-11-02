@@ -6,6 +6,12 @@
 
 排错前先读仓库根的 **CONTRACT.md**（唯一口径）；本文件只讲"怎么用、别踩什么"，两者冲突时以 CONTRACT 为准。
 
+## 写东西之前先读语气
+
+要写推文/回复/日报摘要时，先读 **`prompts/voice.md`**（来源：`elohia-double` 数字分身的本机语料）：
+先短句再展开、说「写了个程序」不说「打造工作流」、禁营销词、数字必须真、结尾不喊口号。
+发布前跑一遍 `node D:\elohia\scripts\assistant.mjs polish/check`。**分身只产草稿，本人确认才发。**
+
 ## 一句话流程
 
 `x_status` 探通道 → 每方向 `x_search` → 挑精读 `x_tweet`（带回复区）→ 写 `out/<日期>.md` 五节 → 更新 `seen.md` → （可选，开关打开时）`x_write_status` + 少量写操作 → （可选）`x_deliver`。
