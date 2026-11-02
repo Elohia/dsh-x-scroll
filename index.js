@@ -89,6 +89,8 @@ const DEFAULTS = {
   /** 回复正文下限（治"说得好"），以及回复里是否允许放链接 */
   replyMinChars: 15,
   replyAllowLinks: false,
+  /** 长文上限（加权字符）：X Premium 可到 25000，默认仍按普通号 280 */
+  maxPostWeight: 280,
   /** 撞到限流/风控信号后冷却多少小时（这期间一律不许再跑） */
   riskCooldownHours: 24,
 }
@@ -178,6 +180,7 @@ export function apply(ctx, config) {
     if ('maxRepliesPerDay' in p) p.maxRepliesPerDay = intOf(p.maxRepliesPerDay, DEFAULTS.maxRepliesPerDay, 0, 500)
     if ('maxPostsPerDay' in p) p.maxPostsPerDay = intOf(p.maxPostsPerDay, DEFAULTS.maxPostsPerDay, 0, 100)
     if ('replyMinChars' in p) p.replyMinChars = intOf(p.replyMinChars, DEFAULTS.replyMinChars, 0, 280)
+    if ('maxPostWeight' in p) p.maxPostWeight = intOf(p.maxPostWeight, DEFAULTS.maxPostWeight, 1, 25000)
     if ('headlessProfile' in p) p.headlessProfile = String(p.headlessProfile || 'headless').trim() || 'headless'
     if ('directions' in p) {
       const lines = String(p.directions || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 12)
