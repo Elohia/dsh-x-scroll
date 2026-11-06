@@ -84,6 +84,18 @@ node selfcheck.mjs
 | **长帖 Note Tweet** | 一条推文，最长 25,000 字符，时间线里正常显示、可转发 | `x_post` → **`CreateNoteTweet`（本插件已接）** |
 | **Articles（文章）** | 独立的长文页面（有标题、富文本、封面），不是推文 | X API v2 `POST /2/articles/draft` → `/publish`，需要 **OAuth 1.0a 或 OAuth 2.0 PKCE user token**（本插件的 cookie 登录不够） |
 
+### 文章（Article）也已经接上：`x_article`
+
+```
+x_article { title, markdown, publish?, confirm? }
+```
+
+- 默认：建草稿 → 立刻发布；`publish:false` 只建草稿（返回 id，可在 x.com 编辑器里改）。
+- 正文走 Draft.js `content_state`：段落、`##`/`###` 两级标题、`-` 列表、`>` 引用、`---` 分隔线都支持。
+- 发布链路：`ArticleEntityDraftCreate` → `ArticleEntityPublish`（queryId 轮换时自动换备用）。
+- 闸门：算 `allowPost`，计入 `maxPostsPerDay`，仍然要 `confirm`；台账 action 记 `article`。
+- **实测**：MCP 调用 618ms 建草稿成功，发布成功，随后 `ArticleEntityDelete` 清理干净（`articleentity_delete: Done`）。
+
 > 2026-11-06 实测：300 字符纯英文 / 545 字中文长帖都能发出去（`data.notetweet_create.tweet_results.result.rest_id`），
 > 发完可正常删除。`twitter-cli` 0.8.5 只实现 `CreateTweet`，所以它自己永远卡在 280 —— 这也是之前「Premium 账号却发不了长文」的真正原因。
 

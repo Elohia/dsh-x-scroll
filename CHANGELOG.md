@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 0.3.1 · 2026-11-06
+
+### 新增：文章（X Article）
+
+- `lib/article.mjs`：markdown → Draft.js `content_state`；`ArticleEntityDraftCreate` 建草稿、`ArticleEntityPublish` 发布、
+  `ArticleEntityDelete` 清理；queryId 轮换自动换备用。
+- `x_article` 工具（宿主编排）：`{ title, markdown, publish?, confirm? }`；`publish:false` 只建草稿。
+- 闸门：action `article` 复用 `allowPost` + `maxPostsPerDay`，内容闸门只校验标题（正文由 content_state 承载）。
+
+### 改
+
+- `lib/note.mjs` 抽出通用 `graphqlPost(op, qid, payload, opts)`，长帖与文章共用同一套 cookie 传输层。
+
 ## 0.3.0 · 2026-11-06
 
 ### 新增：长帖（>280 加权）

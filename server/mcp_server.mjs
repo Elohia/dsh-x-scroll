@@ -54,6 +54,7 @@ import {
   xHome,
 } from '../lib/xcli.mjs'
 import { runGated, writeSummary } from '../lib/writegate.mjs'
+import { createArticleDraft, publishArticle } from '../lib/article.mjs'
 
 const HOME = xHome()
 
@@ -410,6 +411,38 @@ async function toolPost(args) {
   return out
 }
 
+/** 文章：{title?, markdown, publish?, confirm?} —— 建草稿，publish!==false 时立刻发布 */
+async function toolArticle(args) {
+  const a = args || {}
+  const markdown = String(a.markdown ?? a.text ?? '')
+  const title = String(a.title ?? '')
+  if (!markdown.trim()) return inputBlock('正文（markdown）是空的', { action: 'article' })
+  const wantPublish = a.publish !== false
+  const r = await runGated('article', { target: '', text: title || markdown.split('\n')[0], confirm: a.confirm }, async () => {
+    const cred = await resolveCredentials({})
+    if (!cred.ok) throw Object.assign(new Error(cred.error || '缺凭据'), { code: 'no_credential' })
+    const px = await resolveProxy({})
+    const opts = { token: cred.token, ct0: cred.ct0, proxyUrl: px && px.ok ? px.url : '' }
+    const draft = await createArticleDraft({ title, markdown, opts })
+    if (!wantPublish) return { data: { id: draft.id, draft: true, title: draft.title } }
+    const pub = await publishArticle(draft.id, opts)
+    return { data: { id: draft.id, url: 'https://x.com/i/articles/' + draft.id, draft: false, title: draft.title, published: !!pub } }
+  })
+  if (!r.ok) return gateFail('article', '', r)
+  const d = writeData(r.result)
+  return {
+    ok: true,
+    action: 'article',
+    id: String(d.id || ''),
+    url: String(d.url || ('https://x.com/i/articles/' + String(d.id || ''))),
+    draft: !!d.draft,
+    title: String(d.title || ''),
+    today: r.today,
+    ledger: r.entry,
+    note: d.draft ? '草稿已建（未发布）' : '文章已发布',
+  }
+}
+
 /** 写开关与今日用量：四个开关 + 今日已用/上限 + 台账最后 5 条 */
 function toolWriteStatus() {
   return writeSummary()
@@ -547,6 +580,23 @@ const TOOLS = [
       required: ['text'],
     },
     run: (a) => toolPost(a),
+  },
+  {
+    name: 'x_article',
+    description: '发一篇 X 文章（Article，独立页面）：标题 + markdown 正文，默认建草稿后立刻发布。'
+      + '⚠️ 写操作：要求 allowWrite + allowPost，默认要求 confirm:true；计入 maxPostsPerDay。'
+      + 'publish=false 只建草稿。返回文章 id / url。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '标题（也可用 markdown 第一行 # 标题）' },
+        markdown: { type: 'string', description: '正文 markdown（支持 # 标题、- 列表、> 引用、--- 分隔线）' },
+        publish: { type: 'boolean', description: '默认 true；false 只建草稿' },
+        confirm: { type: 'boolean', description: 'postRequireConfirm=true 时必须显式 true' },
+      },
+      required: ['markdown'],
+    },
+    run: (a) => toolArticle(a),
   },
   {
     name: 'x_write_status',

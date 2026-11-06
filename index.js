@@ -875,6 +875,29 @@ export function apply(ctx, config) {
   })
 
   tool({
+    name: 'x_article',
+    description: '发一篇 X 文章（Article，独立页面）：标题 + markdown 正文，默认建草稿后立刻发布。写操作，要 allowWrite + allowPost。\n'
+      + 'publish=false 只建草稿。返回文章 id / url，或 {ok:false, blocked, reason}。',
+    parameters: {
+      title: { type: 'string', description: '标题（也可用 markdown 第一行 # 标题）' },
+      markdown: { type: 'string', description: '正文 markdown（# 标题、- 列表、> 引用、--- 分隔线）' },
+      publish: { type: 'boolean', description: '默认 true；false 只建草稿' },
+      confirm: { type: 'boolean', description: '确认执行（postRequireConfirm 为 true 时必填 true）' },
+    },
+    async execute(args) {
+      const gate = writeGate('Post')
+      if (gate) return gate
+      const markdown = String(args.markdown ?? '').trim()
+      if (!markdown) return { ok: false, blocked: 'args', reason: 'markdown 不能为空' }
+      const payload = { markdown, confirm: Boolean(args.confirm) }
+      const title = String(args.title ?? '').trim()
+      if (title) payload.title = title
+      if (args.publish === false) payload.publish = false
+      return call('x_article', payload, { timeoutMs: 180000 })
+    },
+  })
+
+  tool({
     name: 'x_write_status',
     description: '看写操作今天能不能动手：四个开关 + 今日已用/上限 + 台账最后 5 条。\n'
       + '写之前先用它自检；返回 ok=false 时看 error，别硬试。',
@@ -1009,7 +1032,7 @@ export function apply(ctx, config) {
     const posix = (p) => String(p).replace(/\\/g, '/')
     // 读工具常备；写工具也放进来（真正能不能写由 MCP 的七道闸门按 config 判定，不靠白名单兜底）
     const whitelist = ['x_status', 'x_whoami', 'x_search', 'x_user', 'x_posts', 'x_tweet', 'x_growth',
-      'x_like', 'x_follow', 'x_reply', 'x_post', 'x_write_status']
+      'x_like', 'x_follow', 'x_reply', 'x_post', 'x_article', 'x_write_status']
     const bin = String(cfg.twitterBin || '').trim()
     const proxy = String(cfg.proxy || '').trim()
     const yml = [
