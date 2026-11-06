@@ -1,6 +1,6 @@
 {
   "name": "dsh-x-scroll",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "DSH 插件：每天刷一轮 X（Twitter）读帖写日报；点赞/关注/回复/发帖默认全关，需在设置里显式打开并受额度与台账约束",
   "type": "module",
   "main": "index.js",

@@ -89,8 +89,8 @@ const DEFAULTS = {
   /** 回复正文下限（治"说得好"），以及回复里是否允许放链接 */
   replyMinChars: 15,
   replyAllowLinks: false,
-  /** 长文上限（加权字符）：X Premium 可到 25000，默认仍按普通号 280 */
-  maxPostWeight: 280,
+  /** 长文上限（加权字符）：>280 自动走长帖通道；非 Premium 账号改成 280 */
+  maxPostWeight: 25000,
   /** 撞到限流/风控信号后冷却多少小时（这期间一律不许再跑） */
   riskCooldownHours: 24,
 }
@@ -858,7 +858,7 @@ export function apply(ctx, config) {
     description: '发一条推文（写操作，含引用转推请用 replyTo）。要 **总闸 allowWrite + allowPost** 都开；MCP 还会过字数/额度/去重闸门。\n'
       + '返回 ok=true + tweet id/url，或 {ok:false, blocked, reason}。⚠️ 只在有实测回执时发。',
     parameters: {
-      text: { type: 'string', description: '正文（≤280 加权）' },
+      text: { type: 'string', description: '正文；>280 加权自动走长帖通道（CreateNoteTweet，上限 25000）' },
       confirm: { type: 'boolean', description: '确认执行（postRequireConfirm 为 true 时必填 true）' },
       replyTo: { type: 'string', description: '引用/回复的推文 ID（可省）' },
     },
