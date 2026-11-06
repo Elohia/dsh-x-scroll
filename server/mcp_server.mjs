@@ -54,7 +54,7 @@ import {
   xHome,
 } from '../lib/xcli.mjs'
 import { runGated, writeSummary } from '../lib/writegate.mjs'
-import { createArticleDraft, publishArticle } from '../lib/article.mjs'
+import { publishArticleFlow } from '../lib/article.mjs'
 
 const HOME = xHome()
 
@@ -411,22 +411,32 @@ async function toolPost(args) {
   return out
 }
 
-/** 文章：{title?, markdown, publish?, confirm?} —— 建草稿，publish!==false 时立刻发布 */
+/** 文章：{title?, markdown, images?, cover?, publish?, confirm?} —— 上传图片 → 建草稿 → 可选封面 → 发布 */
 async function toolArticle(args) {
   const a = args || {}
   const markdown = String(a.markdown ?? a.text ?? '')
   const title = String(a.title ?? '')
   if (!markdown.trim()) return inputBlock('正文（markdown）是空的', { action: 'article' })
   const wantPublish = a.publish !== false
+  const images = a.images && typeof a.images === 'object' ? a.images : {}
+  const cover = a.cover ? String(a.cover) : ''
+
   const r = await runGated('article', { target: '', text: title || markdown.split('\n')[0], confirm: a.confirm }, async () => {
     const cred = await resolveCredentials({})
     if (!cred.ok) throw Object.assign(new Error(cred.error || '缺凭据'), { code: 'no_credential' })
     const px = await resolveProxy({})
     const opts = { token: cred.token, ct0: cred.ct0, proxyUrl: px && px.ok ? px.url : '' }
-    const draft = await createArticleDraft({ title, markdown, opts })
-    if (!wantPublish) return { data: { id: draft.id, draft: true, title: draft.title } }
-    const pub = await publishArticle(draft.id, opts)
-    return { data: { id: draft.id, url: 'https://x.com/i/articles/' + draft.id, draft: false, title: draft.title, published: !!pub } }
+    const out = await publishArticleFlow({ title, markdown, images, cover, publish: wantPublish, opts })
+    return {
+      data: {
+        id: out.id,
+        url: out.url,
+        draft: !out.published,
+        title: out.title,
+        images: (out.uploaded || []).length,
+        cover: out.cover || '',
+      },
+    }
   })
   if (!r.ok) return gateFail('article', '', r)
   const d = writeData(r.result)
@@ -437,6 +447,8 @@ async function toolArticle(args) {
     url: String(d.url || ('https://x.com/i/articles/' + String(d.id || ''))),
     draft: !!d.draft,
     title: String(d.title || ''),
+    images: Number(d.images) || 0,
+    cover: String(d.cover || ''),
     today: r.today,
     ledger: r.entry,
     note: d.draft ? '草稿已建（未发布）' : '文章已发布',
@@ -592,6 +604,8 @@ const TOOLS = [
         title: { type: 'string', description: '标题（也可用 markdown 第一行 # 标题）' },
         markdown: { type: 'string', description: '正文 markdown（支持 # 标题、- 列表、> 引用、--- 分隔线）' },
         publish: { type: 'boolean', description: '默认 true；false 只建草稿' },
+        images: { type: 'object', description: 'markdown 里的图片 src -> 本地文件路径（如 {"shots/1.png": "D:\\a\\1.png"}）' },
+        cover: { type: 'string', description: '封面图本地路径（可选）' },
         confirm: { type: 'boolean', description: 'postRequireConfirm=true 时必须显式 true' },
       },
       required: ['markdown'],

@@ -94,6 +94,33 @@ x_article { title, markdown, publish?, confirm? }
 - 正文走 Draft.js `content_state`：段落、`##`/`###` 两级标题、`-` 列表、`>` 引用、`---` 分隔线都支持。
 - 发布链路：`ArticleEntityDraftCreate` → `ArticleEntityPublish`（queryId 轮换时自动换备用）。
 - 闸门：算 `allowPost`，计入 `maxPostsPerDay`，仍然要 `confirm`；台账 action 记 `article`。
+### 图片 / 封面 / 代码块 / 内嵌帖子
+
+```
+x_article {
+  title, markdown,
+  images: { "shots/1.png": "D:/a/1.png" },   // markdown 里的 src -> 本地文件
+  cover:  "D:/a/cover.png",                  // 封面（可选）
+  publish, confirm
+}
+```
+
+正文里这样写：
+
+| 写法 | 变成 |
+|:--|:--|
+| 独占一行 `![说明](src)` | `MEDIA` 实体（图片/动图） |
+| 三反引号围栏 | `MARKDOWN` 实体（X 端按 markdown 渲染代码） |
+| 独占一行 `https://x.com/user/status/<id>` | `TWEET` 实体（内嵌推文） |
+| `---` | `DIVIDER` 分隔线 |
+
+- 图片 src 可以是本地路径（直接读），也可以用 `images` 映射短名。
+- **上传走 Python 助手**（`lib/upload_helper.py` + curl_cffi）：Node 的 TLS 指纹过不了 `upload.x.com` 前面的 Cloudflare（实测 400），twitter-cli 那套 curl_cffi 能过（202/201）。
+- 两处 `media_category` 不同：上传 `tweet_image`、正文引用 `DraftTweetImage`（gif/video 对应 `tweet_gif`/`DraftTweetGif`、`tweet_video`/`DraftTweetVideo`）。
+
+> ⚠️ **发布受账号当日发送额度限制**。实测调 `ArticleEntityPublish` 可能回 `code 344 / AuthorizationError: You have reached your daily limit for sending Tweets and messages`。
+> 这不是权限问题，是当日发推额度用尽（含测试消耗）；草稿会保住（`x_article publish:false` 建的），额度重置后直接发布即可。
+
 - **实测**：MCP 调用 618ms 建草稿成功，发布成功，随后 `ArticleEntityDelete` 清理干净（`articleentity_delete: Done`）。
 
 > 2026-11-06 实测：300 字符纯英文 / 545 字中文长帖都能发出去（`data.notetweet_create.tweet_results.result.rest_id`），

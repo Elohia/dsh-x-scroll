@@ -882,6 +882,8 @@ export function apply(ctx, config) {
       title: { type: 'string', description: '标题（也可用 markdown 第一行 # 标题）' },
       markdown: { type: 'string', description: '正文 markdown（# 标题、- 列表、> 引用、--- 分隔线）' },
       publish: { type: 'boolean', description: '默认 true；false 只建草稿' },
+      images: { type: 'object', description: 'markdown 里的图片 src -> 本地文件路径' },
+      cover: { type: 'string', description: '封面图本地路径（可选）' },
       confirm: { type: 'boolean', description: '确认执行（postRequireConfirm 为 true 时必填 true）' },
     },
     async execute(args) {
@@ -892,6 +894,8 @@ export function apply(ctx, config) {
       const payload = { markdown, confirm: Boolean(args.confirm) }
       const title = String(args.title ?? '').trim()
       if (title) payload.title = title
+      if (args.images && typeof args.images === 'object') payload.images = args.images
+      if (args.cover) payload.cover = String(args.cover)
       if (args.publish === false) payload.publish = false
       return call('x_article', payload, { timeoutMs: 180000 })
     },

@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 0.3.2 · 2026-11-06
+
+### 新增：文章里的图片 / 封面 / 代码块 / 内嵌帖子
+
+- `lib/media.mjs` + `lib/upload_helper.py`：媒体上传（INIT/APPEND/FINALIZE/STATUS）。
+  Node 的 TLS 过不了 upload.x.com 的 Cloudflare，改由 twitter-cli 同 venv 的 curl_cffi（`impersonate=chrome`）上传；
+  `CurlMime` 传 multipart，FINALIZE 接受 200/201/202。
+- `lib/article.mjs`：`mdToContentState` 支持 MEDIA / MARKDOWN（代码块）/ TWEET / DIVIDER 实体；
+  `setCoverMedia`（`ArticleEntityUpdateCoverMedia`）；`publishArticleFlow` 串起「传图 → 建草稿 → 设封面 → 发布」。
+- `x_article` 增加 `images` / `cover` 参数；返回 `images` 张数与 `cover` media_id。
+
+### 修
+
+- `publishArticle` 现在检查 GraphQL `errors`：`code 344` 映射成人话（当日发送额度用尽，草稿保留）。
+- `lib/http.mjs`：抽出的通用 HTTPS 客户端（代理 CONNECT + chunked/content-length 分帧），空白 POST 现在也带 `Content-Length: 0`。
+
 ## 0.3.1 · 2026-11-06
 
 ### 新增：文章（X Article）
